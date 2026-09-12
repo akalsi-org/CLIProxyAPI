@@ -45,7 +45,8 @@ jobs:
             -o "$archive_dir/cli-proxy-api" ./cmd/server/
           cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
           tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
-          "$archive_dir/cli-proxy-api" -h 2>&1 | head -n 1
+          "$archive_dir/cli-proxy-api" -h >version.txt 2>&1
+          grep -Fq "CLIProxyAPI Version: ${version}," version.txt
       - name: Create release and upload asset
         shell: bash
         env:

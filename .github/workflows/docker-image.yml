@@ -2,8 +2,10 @@ name: docker-image
 
 on:
   push:
+    # Disabled in the akalsi-org fork: no DockerHub credentials here and
+    # my-init consumes only the linux amd64 tarball. Never matches.
     tags:
-      - v*
+      - 'fork-releases-disabled'
 
 env:
   APP_NAME: CLIProxyAPI
