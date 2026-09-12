@@ -1,0 +1,63 @@
+name: fork-release
+
+# akalsi-org fork pipeline. Builds only v*-meta.* tags, which carry upstream
+# PR #5502 (native Meta provider) until it merges upstream. Upstream
+# release.yaml is disabled in this fork and owns no tags here. The fork merge
+# commit carries the reason and the return plan. This workflow deliberately
+# skips refresh-model-catalogs.sh so the PR's meta catalog entries survive.
+
+on:
+  push:
+    tags:
+      - 'v*-meta.*'
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.26.4'
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build and pack linux amd64
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          commit="$(git rev-parse --short HEAD)"
+          date_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          archive_dir="dist/linux-amd64/archive"
+          archive_name="CLIProxyAPI_${version}_linux_amd64.tar.gz"
+          rm -rf dist/linux-amd64
+          mkdir -p "$archive_dir"
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.Version=${version} -X main.Commit=${commit} -X main.BuildDate=${date_utc}" \
+            -o "$archive_dir/cli-proxy-api" ./cmd/server/
+          cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          tar -C "$archive_dir" -czf "dist/$archive_name" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          "$archive_dir/cli-proxy-api" -h 2>&1 | head -n 1
+      - name: Create release and upload asset
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          asset="dist/CLIProxyAPI_${version}_linux_amd64.tar.gz"
+          [ -f "$asset" ] || { echo "missing $asset" >&2; exit 1; }
+          notes="akalsi-org fork build of ${GITHUB_REF_NAME}: upstream v7.2.125 plus PR #5502 (native Meta provider). Reason and return plan: see the fork merge commit."
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "$asset" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes "$notes" "$asset"
+          fi

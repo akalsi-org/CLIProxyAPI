@@ -2,9 +2,10 @@ name: release
 
 on:
   push:
-    # run only against tags
+    # Disabled in the akalsi-org fork: fork-release.yml owns v*-meta.* tags.
+    # This sentinel never matches so the upstream matrix never fires here.
     tags:
-      - '*'
+      - 'fork-releases-disabled'
 
 permissions:
   contents: write
