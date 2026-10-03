@@ -362,12 +362,7 @@ func authHasRefreshCredential(auth *Auth) bool {
 	if authMetadataString(auth, "refresh_token") != "" {
 		return true
 	}
-	if authMetadataString(auth, "refreshToken") != "" {
-		return true
-	}
-	// Meta exchanges its device token for a replacement API key after a 401.
-	return auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta") &&
-		(authMetadataString(auth, "dca_token") != "" || strings.TrimSpace(auth.Attributes["dca_token"]) != "")
+	return authMetadataString(auth, "refreshToken") != ""
 }
 
 // CredentialsChanged reports whether authentication credentials (tokens or API keys)

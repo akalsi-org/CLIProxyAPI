@@ -121,10 +121,6 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
-	if len(parsed.Meta) == 0 && oldData != nil && len(oldData.Meta) > 0 {
-		parsed.Meta = oldData.Meta
-	}
-
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -220,7 +216,6 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"kimi", oldData.Kimi, newData.Kimi},
 		{"antigravity", oldData.Antigravity, newData.Antigravity},
 		{"xai", oldData.XAI, newData.XAI},
-		{"meta", oldData.Meta, newData.Meta},
 	}
 
 	seen := make(map[string]bool, len(sections))
@@ -341,7 +336,6 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "kimi", models: data.Kimi},
 		{name: "antigravity", models: data.Antigravity},
 		{name: "xai", models: data.XAI},
-		{name: "meta", models: data.Meta},
 	}
 
 	for _, section := range requiredSections {
