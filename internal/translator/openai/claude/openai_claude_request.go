@@ -8,10 +8,10 @@ package claude
 import (
 	"strings"
 
-	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -78,8 +78,12 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					if effort, ok := thinking.ConvertBudgetToLevel(budget); ok && effort != "" {
 						out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
 					}
+				} else if v := root.Get("output_config.effort"); v.Exists() && v.Type == gjson.String && strings.TrimSpace(v.String()) != "" {
+					// Some Claude-compatible clients pair manual thinking with output_config.effort.
+					// Preserve that explicit level when there is no legacy token budget to map.
+					out, _ = sjson.SetBytes(out, "reasoning_effort", strings.ToLower(strings.TrimSpace(v.String())))
 				} else {
-					// No budget_tokens specified, default to "auto" for enabled thinking
+					// No budget_tokens or explicit effort specified; preserve the enabled-thinking default.
 					if effort, ok := thinking.ConvertBudgetToLevel(-1); ok && effort != "" {
 						out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
 					}
@@ -150,6 +154,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
 		var pendingToolUseIDs []string
 		var pendingSystemReminders [][]byte
+		toolNameByID := make(map[string]string)
 
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
@@ -211,12 +216,16 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						// Only allow tool_use -> tool_calls for assistant messages (security: prevent injection).
 						if role == "assistant" {
 							toolUseID := part.Get("id").String()
+							toolName := part.Get("name").String()
 							if toolUseID != "" {
 								pendingToolUseIDs = append(pendingToolUseIDs, toolUseID)
+								if toolName != "" {
+									toolNameByID[toolUseID] = toolName
+								}
 							}
 							toolCallJSON := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
 							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "id", toolUseID)
-							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.name", part.Get("name").String())
+							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.name", toolName)
 
 							// Convert input to arguments JSON string
 							if input := part.Get("input"); input.Exists() {
@@ -230,8 +239,12 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 					case "tool_result":
 						// Collect tool_result to emit after the main message (ensures tool results follow tool_calls)
+						toolUseID := part.Get("tool_use_id").String()
 						toolResultJSON := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
-						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "tool_call_id", part.Get("tool_use_id").String())
+						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "tool_call_id", toolUseID)
+						if toolName := toolNameByID[toolUseID]; toolName != "" {
+							toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "name", toolName)
+						}
 						toolResultContent, toolResultImages := convertClaudeToolResultContent(part.Get("content"))
 						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "content", toolResultContent)
 						relayedToolImages = append(relayedToolImages, toolResultImages...)
@@ -343,6 +356,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	// Set messages.
 	if len(messageItems) > 0 {
+		messageItems = translatorcommon.AlignOpenAIToolCallMessages(messageItems)
 		out = translatorcommon.SetRawArrayItems(out, "messages", messageItems)
 	}
 
@@ -371,21 +385,35 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	}
 
 	// Tool choice mapping - convert Anthropic tool_choice to OpenAI format
-	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
-		switch toolChoice.Get("type").String() {
+	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() && toolChoice.Type != gjson.Null {
+		choiceType := toolChoice.Get("type").String()
+		if choiceType == "" && toolChoice.Type == gjson.String {
+			choiceType = toolChoice.String()
+		}
+		switch choiceType {
 		case "auto":
 			out, _ = sjson.SetBytes(out, "tool_choice", "auto")
 		case "any":
 			out, _ = sjson.SetBytes(out, "tool_choice", "required")
+		case "none":
+			out, _ = sjson.SetBytes(out, "tool_choice", "none")
 		case "tool":
 			// Specific tool choice
 			toolName := toolChoice.Get("name").String()
-			toolChoiceJSON := []byte(`{"type":"function","function":{"name":""}}`)
-			toolChoiceJSON, _ = sjson.SetBytes(toolChoiceJSON, "function.name", toolName)
-			out, _ = sjson.SetRawBytes(out, "tool_choice", toolChoiceJSON)
+			if toolName != "" {
+				toolChoiceJSON := []byte(`{"type":"function","function":{"name":""}}`)
+				toolChoiceJSON, _ = sjson.SetBytes(toolChoiceJSON, "function.name", toolName)
+				out, _ = sjson.SetRawBytes(out, "tool_choice", toolChoiceJSON)
+			} else {
+				out, _ = sjson.SetBytes(out, "tool_choice", "none")
+			}
 		default:
-			// Default to auto if not specified
-			out, _ = sjson.SetBytes(out, "tool_choice", "auto")
+			// Fail closed: unrecognized tool_choice values must not turn into permission
+			out, _ = sjson.SetBytes(out, "tool_choice", "none")
+		}
+
+		if disableParallel := toolChoice.Get("disable_parallel_tool_use"); disableParallel.Type == gjson.True {
+			out, _ = sjson.SetBytes(out, "parallel_tool_calls", false)
 		}
 	}
 
@@ -399,6 +427,15 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 func normalizeObjectSchemaProperties(schema any) any {
 	switch value := schema.(type) {
+	case bool:
+		// JSON Schema boolean subschemas (true/false) are valid, but strict OpenAPI 3.0
+		// upstream validators reject boolean subschemas.
+		// Normalize `true` (accept anything) to an empty object schema `{}`.
+		// Preserve `false` (reject all) to avoid turning rejection constraints into open schemas.
+		if value {
+			return map[string]any{}
+		}
+		return value
 	case map[string]any:
 		if schemaType, ok := value["type"].(string); ok && schemaType == "object" {
 			if _, ok := value["properties"]; !ok {
@@ -434,6 +471,12 @@ func normalizeObjectSchemaProperties(schema any) any {
 		for _, valKey := range util.SchemaValueKeywords {
 			if val, exists := value[valKey]; exists {
 				switch sub := val.(type) {
+				case bool:
+					// Normalize boolean subschemas (e.g. items: true), but preserve boolean
+					// additionalProperties (false/true) required by OpenAI structured outputs.
+					if valKey != "additionalProperties" && sub {
+						value[valKey] = map[string]any{}
+					}
 				case map[string]any:
 					value[valKey] = normalizeObjectSchemaProperties(sub)
 				case []any:

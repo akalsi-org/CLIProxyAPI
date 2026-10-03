@@ -6,10 +6,10 @@ package cliproxy
 import (
 	"context"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 // TokenClientProvider loads clients backed by stored authentication tokens.
@@ -67,6 +67,9 @@ type APIKeyClientResult struct {
 
 	// XAIKeyCount is the number of xAI API keys loaded
 	XAIKeyCount int
+
+	// MetaKeyCount is the number of Meta API keys loaded
+	MetaKeyCount int
 
 	// OpenAICompatCount is the number of OpenAI compatibility API keys loaded
 	OpenAICompatCount int

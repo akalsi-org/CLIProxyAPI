@@ -7,14 +7,14 @@ import (
 	"context"
 	"fmt"
 
-	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	configaccess "github.com/router-for-me/CLIProxyAPI/v8/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // Builder constructs a Service instance with customizable providers.
@@ -288,6 +288,7 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager:         coreManager,
 		cooldownStateStore:  cooldownStateStore,
 		pluginHost:          pluginHost,
+		discoveryManager:    newDiscoveryAdvertiserManager(),
 		appliedRoutingState: appliedRoutingState,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
 	}
@@ -327,7 +328,8 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 			}
 		}
 		// Detach from request cancellation so runtime model registration always completes
-		// once the credential has been persisted to disk.
+		// once the credential has been persisted to disk. If the watcher consumer already
+		// claimed this revision, handleAuthUpdate waits for that registration to finish.
 		syncCtx := coreauth.WithSkipPersist(context.Background())
 		s.handleAuthUpdate(syncCtx, update)
 		return nil
