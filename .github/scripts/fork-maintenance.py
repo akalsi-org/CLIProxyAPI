@@ -137,7 +137,8 @@ def publish():
   binary = DIST / 'archive/cli-proxy-api'
   archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
   binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
-  banner = subprocess.run([str(binary), '-h'], capture_output=True, text=True, timeout=10, check=True)
+  banner = subprocess.run([str(binary), '-h'], capture_output=True, text=True, timeout=10, check=True,
+    cwd=DIST, env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(DIST), 'LANG': 'C'})
   if f'CLIProxyAPI Version: {version},' not in banner.stdout + banner.stderr:
     raise ValueError('built binary has the wrong version')
   base_url = f'https://github.com/{REPOSITORY}/releases/download/v{version}'

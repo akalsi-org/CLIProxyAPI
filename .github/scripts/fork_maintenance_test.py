@@ -135,12 +135,14 @@ class MaintenanceTests(unittest.TestCase):
             patch.object(maintenance, 'STATE', state), patch.object(maintenance, 'DIST', base), \
             patch.object(maintenance, 'run', side_effect=run), \
             patch.object(maintenance.subprocess, 'run', return_value=SimpleNamespace(
-              stdout='CLIProxyAPI Version: 8.0.13-akalsi.1,', stderr='')):
+              stdout='CLIProxyAPI Version: 8.0.13-akalsi.1,', stderr='')) as banner:
           if fail_upload:
             with self.assertRaises(subprocess.CalledProcessError):
               maintenance.publish()
           else:
             maintenance.publish()
+        self.assertEqual(set(banner.call_args.kwargs['env']), {'PATH', 'HOME', 'LANG'})
+        self.assertEqual(banner.call_args.kwargs['cwd'], base)
         create = next(argv for argv in calls if argv[:3] == ('gh', 'release', 'create'))
         self.assertIn('--draft', create)
         for member in ('checksums.txt', 'release.env', 'provenance.json'):
