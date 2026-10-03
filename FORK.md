@@ -23,6 +23,10 @@ Neither normal my-init installation nor pin following requires GitHub credential
 
 A candidate merges upstream main without a force push.
 Merge conflicts, upstream history rewrites, failed tests, and build failures stop publication.
+Upstream workflow-file changes also stop synchronization for manual integration.
+GitHub's repository `GITHUB_TOKEN` cannot push workflow-file changes.
+Integrate those changes locally with authorized SSH access or a workflows-authorized token, then dispatch maintenance again.
+No upstream workflow changes are silently discarded.
 The workflow runs the Antigravity regressions, all Go tests, and a server compile check.
 An unchanged tested source and upstream release baseline produce no release.
 A new candidate uses the latest stable upstream version plus `-akalsi.N`.

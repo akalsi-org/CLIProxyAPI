@@ -38,9 +38,25 @@ def next_version(upstream_tag, tags):
   return f'{base}-akalsi.{max(revisions, default=0) + 1}'
 
 
-def stable_release(releases):
-  return next((item for item in releases if not item['draft'] and not item['prerelease']
-    and RELEASE_TAG.fullmatch(item['tag_name'])), None)
+def stable_release(release):
+  if release['draft'] or release['prerelease'] or not RELEASE_TAG.fullmatch(release['tag_name']):
+    raise ValueError('upstream latest release is not a supported stable version')
+  return release
+
+
+def release_history():
+  pages = json.loads(run('gh', 'api', '--paginate', '--slurp',
+    f'repos/{REPOSITORY}/releases?per_page=100'))
+  return [release for page in pages for release in page]
+
+
+def version_numbers(value):
+  return tuple(int(part) for part in value.split('.'))
+
+
+def require_forward_baseline(upstream_tag, previous_tag):
+  if version_numbers(upstream_tag[1:]) < version_numbers(previous_tag[1:]):
+    raise ValueError('upstream release baseline regressed; manual review is required')
 
 
 def prepare():
@@ -49,6 +65,7 @@ def prepare():
   if run('git', 'status', '--porcelain'):
     raise ValueError('candidate checkout has tracked or untracked changes')
   run('git', 'fetch', 'origin', 'main', '--tags')
+  original_sha = run('git', 'rev-parse', 'HEAD')
   run('git', 'fetch', f'https://github.com/{UPSTREAM}.git', 'main', '--tags')
   upstream_sha = run('git', 'rev-parse', 'FETCH_HEAD')
   subprocess.run(['git', 'merge', '--no-commit', '--no-ff', upstream_sha], cwd=ROOT, check=True)
@@ -57,13 +74,14 @@ def prepare():
   if merge_head.returncode == 0:
     run('git', 'commit', '-m', 'fork: sync upstream main',
       '-m', 'Co-Authored-By: Claude Code <noreply@anthropic.com>')
-  release = stable_release(api(f'repos/{UPSTREAM}/releases?per_page=100'))
-  if release is None:
-    raise ValueError('upstream has no supported stable release')
+  workflow_changes = run('git', 'diff', '--name-only', original_sha, 'HEAD', '--', '.github/workflows')
+  if workflow_changes:
+    raise ValueError('upstream changes workflow files; integrate them manually with a workflows-authorized token')
+  release = stable_release(api(f'repos/{UPSTREAM}/releases/latest'))
   upstream_tag = release['tag_name']
   upstream_release_sha = run('git', 'rev-parse', f'{upstream_tag}^{{commit}}')
   source_sha = run('git', 'rev-parse', 'HEAD')
-  releases = api(f'repos/{REPOSITORY}/releases?per_page=100')
+  releases = release_history()
   for published in releases:
     if published['draft'] or published['prerelease'] or not FORK_TAG.fullmatch(published['tag_name']):
       continue
@@ -72,6 +90,7 @@ def prepare():
       continue
     previous = json.loads(run('gh', 'api', '-H', 'Accept: application/octet-stream',
       f'repos/{REPOSITORY}/releases/assets/{asset["id"]}'))
+    require_forward_baseline(upstream_tag, previous['upstream_release_tag'])
     ancestry = subprocess.run(['git', 'merge-base', '--is-ancestor',
       previous['upstream_main_sha'], upstream_sha], cwd=ROOT)
     if ancestry.returncode != 0:
