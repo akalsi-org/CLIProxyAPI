@@ -289,6 +289,10 @@ client:
 # Shared upstream behavior applies to OAuth and API-key credentials.
 upstream:
   codex:
+    # Opt-in pooled upstream WebSockets for HTTP clients. Default is false.
+    # The selected credential must also enable websockets. Client HTTP formats do not change.
+    # Ambiguous post-send transport failures stop without replay, regardless of configured retry rules.
+    http-websockets: false
     # Experimental full-duplex Codex Responses WebSocket steering (default: false).
     # Keeps one upstream account/model per socket; accepted input is never replayed.
     response-steering: false

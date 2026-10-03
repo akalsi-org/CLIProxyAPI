@@ -143,7 +143,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if cliproxyexecutor.IsExecutionUncertain(errExec) || isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
@@ -203,7 +203,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if errExec == nil {
 			return resp, nil
 		}
-		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+		if cliproxyexecutor.IsExecutionUncertain(errExec) || isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
 		}
 		if hasUpstreamExecutionAttempt(errExec) {
@@ -260,6 +260,14 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		result, errStream := m.executeStreamMixedOnce(ctx, normalized, req, roundOpts, maxRetryCredentials, &homeRetryLimit, attempt, defaultRequestRetry)
 		if errStream == nil {
 			return result, nil
+		}
+		if cliproxyexecutor.IsExecutionUncertain(errStream) {
+			errStream = unwrapExecutionBoundaryError(errStream)
+			var bootstrapErr *streamBootstrapError
+			if errors.As(errStream, &bootstrapErr) && bootstrapErr != nil {
+				return streamErrorResult(bootstrapErr.Headers(), errStream), nil
+			}
+			return nil, errStream
 		}
 		if hasUpstreamExecutionAttempt(errStream) {
 			preferredUpstreamErr = errStream
@@ -602,6 +610,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				if cliproxyexecutor.IsExecutionUncertain(errExec) {
+					m.recordUncertainExecutionResult(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false)
+					return cliproxyexecutor.Response{}, errExec
+				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
@@ -624,6 +636,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				} else {
 					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
 				}
+			}
+			if cliproxyexecutor.IsExecutionUncertain(errExec) {
+				m.recordUncertainExecutionResult(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false)
+				return cliproxyexecutor.Response{}, errExec
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
@@ -814,6 +830,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				if cliproxyexecutor.IsExecutionUncertain(errExec) {
+					m.recordUncertainExecutionResult(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false)
+					return cliproxyexecutor.Response{}, errExec
+				}
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
 					auth = refreshed
@@ -836,6 +856,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				} else {
 					warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
 				}
+			}
+			if cliproxyexecutor.IsExecutionUncertain(errExec) {
+				m.recordUncertainExecutionResult(execCtx, auth, provider, resultModel, routeModel, execOpts, errExec, false)
+				return cliproxyexecutor.Response{}, errExec
 			}
 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
@@ -1195,6 +1219,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
 				return nil, errCtx
+			}
+			if cliproxyexecutor.IsExecutionUncertain(errStream) {
+				return nil, errStream
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
 			if okAction {

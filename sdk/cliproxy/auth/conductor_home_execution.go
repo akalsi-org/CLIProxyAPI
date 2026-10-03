@@ -27,6 +27,9 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 		if errExecute == nil {
 			return response, nil
 		}
+		if cliproxyexecutor.IsExecutionUncertain(errExecute) {
+			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
+		}
 		if hasUpstreamExecutionAttempt(errExecute) {
 			preferredUpstreamErr = errExecute
 		}
@@ -243,6 +246,15 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			response, errExecute = execute()
 			errExecute = markUpstreamExecutionAttemptFromContext(execCtx, errExecute)
 			durationHomeExec := time.Since(startHomeExec)
+			if cliproxyexecutor.IsExecutionUncertain(errExecute) {
+				m.recordUncertainExecutionResult(execCtx, preparedAuth, selection.Provider, resultModel, routeModel, execOpts, errExecute, true)
+				releaseAttempt()
+				selection.End("execution_uncertain")
+				if ctx != nil && ctx.Err() != nil {
+					return cliproxyexecutor.Response{}, ctx.Err()
+				}
+				return cliproxyexecutor.Response{}, errExecute
+			}
 			if countTokens {
 				if _, fingerprint := getEffectiveAuth(); isUnauthorizedError(errExecute) {
 					m.reportHomeUnauthorized(execCtx, preparedAuth, selection.Provider, resultModel, fingerprint, extractErrorBody(errExecute))

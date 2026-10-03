@@ -180,6 +180,8 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// HTTPWebsockets enables pooled upstream WebSockets for HTTP requests with WebSocket-enabled credentials. Default is false.
+	HTTPWebsockets bool `yaml:"http-websockets" json:"http-websockets"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of
