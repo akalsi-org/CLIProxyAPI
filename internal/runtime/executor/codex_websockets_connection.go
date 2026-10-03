@@ -26,12 +26,11 @@ const (
 	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
 	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
+	codexHTTPWebsocketWriteBufferSize      = codexWebsocketWriteChunkSize
 )
 
 func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
-	dialer := newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
-	dialer.HandshakeTimeout = codexResponsesWebsocketHandshakeTO
-	dialer.EnableCompression = true
+	dialer := e.codexWebsocketDialer(ctx, auth)
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -46,6 +45,17 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 		conn.EnableWriteCompression(false)
 	}
 	return conn, closer, resp, err
+}
+
+func (e *CodexWebsocketsExecutor) codexWebsocketDialer(ctx context.Context, auth *cliproxyauth.Auth) *websocket.Dialer {
+	dialer := newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
+	dialer.HandshakeTimeout = codexResponsesWebsocketHandshakeTO
+	dialer.EnableCompression = true
+	if ctx != nil && codexHTTPBridge(ctx) != nil {
+		// Match the existing upload chunk. Native websocket dials keep their existing buffer defaults.
+		dialer.WriteBufferSize = codexHTTPWebsocketWriteBufferSize
+	}
+	return dialer
 }
 
 func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
@@ -139,7 +149,21 @@ func buildCodexWebsocketRequestBody(body []byte) []byte {
 	// Match codex-rs websocket v2 semantics: every request is `response.create`.
 	// Incremental follow-up turns continue on the same websocket using
 	// `previous_response_id` + incremental `input`, not `response.append`.
-	body = helps.SanitizeCodexInputItemIDs(body)
+	return encodeCodexWebsocketCreate(helps.SanitizeCodexInputItemIDs(body))
+}
+
+func buildCodexWebsocketRequestBodyForContext(ctx context.Context, body []byte) []byte {
+	if codexHTTPBridge(ctx) != nil {
+		// HTTP cacheHelper already sanitized the final body before deriving its handshake headers.
+		return encodeCodexWebsocketCreate(body)
+	}
+	return buildCodexWebsocketRequestBody(body)
+}
+
+func encodeCodexWebsocketCreate(body []byte) []byte {
+	if len(body) == 0 {
+		return nil
+	}
 	wsReqBody, errSet := sjson.SetBytes(body, "type", "response.create")
 	if errSet == nil && len(wsReqBody) > 0 {
 		return wsReqBody

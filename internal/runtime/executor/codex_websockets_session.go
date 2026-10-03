@@ -49,7 +49,8 @@ func (c *websocketConnectionCloser) Close() error {
 }
 
 type codexWebsocketSession struct {
-	sessionID string
+	sessionID  string
+	httpBridge *codexHTTPWebsocketResource
 
 	reqMu sync.Mutex
 
@@ -116,7 +117,11 @@ func (s *codexWebsocketSession) activate(conn *websocket.Conn) chan codexWebsock
 	if s == nil || conn == nil {
 		return nil
 	}
-	ch := make(chan codexWebsocketRead, 4096)
+	capacity := 4096
+	if s.httpBridge != nil {
+		capacity = 1
+	}
+	ch := make(chan codexWebsocketRead, capacity)
 	s.setActive(conn, ch)
 	return ch
 }
@@ -592,6 +597,9 @@ func (e *CodexWebsocketsExecutor) UpstreamDisconnectChan(sessionID string) <-cha
 }
 
 func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
+	if sess != nil && sess.httpBridge != nil {
+		return e.ensureHTTPBridgeConn(ctx, auth, sess, authID, wsURL, headers)
+	}
 	if sess == nil {
 		conn, closer, resp, err := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
 		if conn != nil {

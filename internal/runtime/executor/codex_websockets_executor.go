@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -31,14 +33,14 @@ func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
 	}
 }
 
-// CodexAutoExecutor routes Codex requests to the websocket transport only when:
-//  1. The downstream transport is websocket, and
-//  2. The selected auth enables websockets.
-//
-// For non-websocket downstream requests, it always uses the legacy HTTP implementation.
+// CodexAutoExecutor preserves native websocket routing and optionally bridges HTTP requests
+// through a separately owned, bounded upstream websocket pool.
 type CodexAutoExecutor struct {
-	httpExec *CodexExecutor
-	wsExec   *CodexWebsocketsExecutor
+	httpExec         *CodexExecutor
+	wsExec           *CodexWebsocketsExecutor
+	httpPoolMu       sync.Mutex
+	httpPool         *helps.CodexHTTPWebsocketPool
+	httpPoolShutdown bool
 }
 
 func NewCodexAutoExecutor(cfg *config.Config) *CodexAutoExecutor {
@@ -74,6 +76,9 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		return cliproxyexecutor.Response{}, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 	}
+	if bridgeCtx, ok := e.httpWebsocketContext(ctx, auth, opts); ok {
+		return e.wsExec.Execute(bridgeCtx, auth, req, opts)
+	}
 	return e.httpExec.Execute(ctx, auth, req, opts)
 }
 
@@ -86,6 +91,9 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	}
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+	}
+	if bridgeCtx, ok := e.httpWebsocketContext(ctx, auth, opts); ok {
+		return e.wsExec.ExecuteStream(bridgeCtx, auth, req, opts)
 	}
 	return e.httpExec.ExecuteStream(ctx, auth, req, opts)
 }
@@ -107,6 +115,16 @@ func (e *CodexAutoExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 func (e *CodexAutoExecutor) CloseExecutionSession(sessionID string) {
 	if e == nil || e.wsExec == nil {
 		return
+	}
+	if sessionID == cliproxyauth.CloseAllExecutionSessionsID {
+		e.httpPoolMu.Lock()
+		e.httpPoolShutdown = true
+		pool := e.httpPool
+		e.httpPool = nil
+		e.httpPoolMu.Unlock()
+		if pool != nil {
+			pool.Close()
+		}
 	}
 	e.wsExec.CloseExecutionSession(sessionID)
 }
