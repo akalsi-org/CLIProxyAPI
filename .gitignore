@@ -37,6 +37,7 @@ GEMINI.md
 AGENTS.override.md
 
 # Tooling metadata
+.local/
 .vscode/*
 .worktrees/
 .codex/*

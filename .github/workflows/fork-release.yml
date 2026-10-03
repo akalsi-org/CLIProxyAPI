@@ -1,0 +1,78 @@
+name: fork-maintenance
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-maintenance
+  cancel-in-progress: false
+
+jobs:
+  sync-test-release:
+    if: github.repository == 'akalsi-org/CLIProxyAPI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_REPO: akalsi-org/CLIProxyAPI
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Configure maintenance identity
+        run: |
+          git config user.name cli-proxy-api-maintenance
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+      - name: Prepare upstream candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/fork-maintenance.py prepare
+      - name: Install verified fork toolchain and modules
+        if: steps.candidate.outputs.changed == 'true'
+        run: ./repo.sh setup
+      - name: Test the candidate and compile the server
+        if: steps.candidate.outputs.changed == 'true'
+        run: |
+          ./repo.sh check-pr
+          ./repo.sh test
+          ./repo.sh build
+      - name: Build plugin-capable Linux amd64 artifact
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.candidate.outputs.version }}
+          COMMIT: ${{ steps.candidate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p .local/fork-release/archive
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e RELEASE_VERSION -e COMMIT -e BUILD_DATE \
+            quay.io/pypa/manylinux2014_x86_64@sha256:ffd6d1f11237599748657996b750db6b3a5b724fea5a81cd9ea65add4f45b6c9 \
+            bash -euo pipefail -c '
+              export PATH="/src/.local/toolchains/go/bin:$PATH"
+              export GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4
+              export GOPATH=/src/.local/cache/gopath GOMODCACHE=/src/.local/cache/modules GOCACHE=/src/.local/cache/go-build
+              CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -mod=readonly -buildvcs=false \
+                -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
+                -o .local/fork-release/archive/cli-proxy-api ./cmd/server/
+              glibc_versions="$(readelf --version-info .local/fork-release/archive/cli-proxy-api | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
+              if [[ -n "$glibc_versions" ]] && [[ "$(printf "2.17\n%s\n" "$glibc_versions" | sort -V | tail -n 1)" != 2.17 ]]; then
+                printf "Artifact requires GLIBC newer than 2.17.\n" >&2
+                exit 1
+              fi
+            '
+          cp LICENSE README.md README_CN.md config.example.yaml .local/fork-release/archive/
+          tar -C .local/fork-release/archive -czf ".local/fork-release/CLIProxyAPI_${RELEASE_VERSION}_linux_amd64.tar.gz" \
+            cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+      - name: Publish tested source and completed release
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/fork-maintenance.py publish
