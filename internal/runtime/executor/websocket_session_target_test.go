@@ -232,12 +232,14 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			var connections atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Number the connection before the handshake response. Otherwise a late
+				// increment from a closed connection can renumber the next one.
+				connection := connections.Add(1)
 				conn, errUpgrade := upgrader.Upgrade(w, r, nil)
 				if errUpgrade != nil {
 					t.Errorf("upgrade websocket: %v", errUpgrade)
 					return
 				}
-				connection := connections.Add(1)
 				defer func() { _ = conn.Close() }()
 				if connection == 1 {
 					_, _, _ = conn.ReadMessage()

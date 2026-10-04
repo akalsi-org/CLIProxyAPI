@@ -67,12 +67,13 @@ func newCodexHTTPTestUpstream(t *testing.T, onCreate func(*websocket.Conn, []byt
 			_, _ = w.Write([]byte(`{"error":{"message":"rejected"}}`))
 			return
 		}
+		// Count before the handshake response so callers cannot observe the upgrade first.
+		upstream.upgrades.Add(1)
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		upstream.upgrades.Add(1)
 		upstream.mu.Lock()
 		upstream.headers = append(upstream.headers, r.Header.Clone())
 		upstream.mu.Unlock()
