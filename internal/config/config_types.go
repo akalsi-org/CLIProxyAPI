@@ -156,6 +156,14 @@ type DevinConfig struct {
 
 // AntigravityConfig configures provider-wide Antigravity request behavior.
 type AntigravityConfig struct {
+	// ProjectID overrides the generation envelope project without changing stored auth metadata.
+	// Empty values preserve stored or discovered project selection.
+	ProjectID string `yaml:"project-id,omitempty" json:"project-id,omitempty"`
+
+	// ModelLevelCooling limits ambiguous resource and rate-limit cooldowns to the failed model.
+	// Explicit quota exhaustion retains credential-wide cooling. Default is false.
+	ModelLevelCooling bool `yaml:"model-level-cooling" json:"model-level-cooling"`
+
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
 

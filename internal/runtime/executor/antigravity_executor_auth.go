@@ -35,7 +35,7 @@ func (e *AntigravityExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Au
 }
 
 func (e *AntigravityExecutor) ShouldPrepareRequestAuth(auth *cliproxyauth.Auth) bool {
-	return antigravityProjectIDFromAuth(auth) == ""
+	return e.projectIDOverride() == "" && antigravityProjectIDFromAuth(auth) == ""
 }
 
 func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
@@ -201,7 +201,7 @@ func (e *AntigravityExecutor) refreshTokenSingleFlight(ctx context.Context, auth
 }
 
 func (e *AntigravityExecutor) ensureAntigravityProjectID(ctx context.Context, auth *cliproxyauth.Auth, accessToken string) error {
-	if auth == nil {
+	if auth == nil || e.projectIDOverride() != "" {
 		return nil
 	}
 
@@ -248,7 +248,17 @@ func (e *AntigravityExecutor) fetchAntigravityProjectID(ctx context.Context, aut
 	return strings.TrimSpace(projectID), nil
 }
 
+func (e *AntigravityExecutor) projectIDOverride() string {
+	if e == nil || e.cfg == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.cfg.Antigravity.ProjectID)
+}
+
 func (e *AntigravityExecutor) projectIDForRequest(_ context.Context, auth *cliproxyauth.Auth, _ string) (string, error) {
+	if projectID := e.projectIDOverride(); projectID != "" {
+		return projectID, nil
+	}
 	if projectID := antigravityProjectIDFromAuth(auth); projectID != "" {
 		return projectID, nil
 	}

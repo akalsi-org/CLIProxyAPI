@@ -372,6 +372,16 @@ upstream:
     # Default: false
     model-level-cooling: false
 
+  antigravity:
+    # Optional generation project override. Empty preserves stored or discovered project selection.
+    # This does not change stored OAuth metadata, quota-project headers, or authentication identity.
+    # Remove the override to restore stored or discovered selection. Google still enforces project authorization and quota.
+    project-id: ""
+    # When true, cool only the failed canonical model after ambiguous resource or rate-limit errors.
+    # Explicit quota exhaustion keeps credential-wide cooling. Default is false.
+    # Missing provider reset guidance retains the five-minute cooldown.
+    model-level-cooling: false
+
   claude:
     # When true, scope quota cooldowns to the requested model rather than cooling down
     # the entire credential across all sibling models. Default is false.

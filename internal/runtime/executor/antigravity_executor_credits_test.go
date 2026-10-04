@@ -236,7 +236,7 @@ func TestClassifyAntigravity429(t *testing.T) {
 		if decision.retryAfter != nil {
 			t.Fatalf("decideAntigravity429().retryAfter = %s, want nil", *decision.retryAfter)
 		}
-		err := newAntigravityStatusErr(http.StatusTooManyRequests, body)
+		err := newAntigravityStatusErr(nil, http.StatusTooManyRequests, body)
 		if !err.IsCredentialScoped() {
 			t.Fatal("newAntigravityStatusErr().IsCredentialScoped() = false, want true")
 		}

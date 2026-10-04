@@ -352,7 +352,7 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
 	return false
 }
 
-func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
+func newAntigravityStatusErr(cfg *config.Config, statusCode int, body []byte) statusErr {
 	err := statusErr{code: statusCode, msg: string(body)}
 	if statusCode != http.StatusTooManyRequests {
 		return err
@@ -360,12 +360,37 @@ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
 	if retryAfter, parseErr := helps.ParseRetryDelay(body); parseErr == nil && retryAfter != nil {
 		err.retryAfter = retryAfter
 	}
+	modelLevelCooling := cfg != nil && cfg.Antigravity.ModelLevelCooling
+	if modelLevelCooling && strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "error.status").String()), "RESOURCE_EXHAUSTED") {
+		// The opt-in changes scope, not provider reset guidance. Explicit quota
+		// exhaustion remains credential-wide without proven narrower dimensions.
+		explicitQuota := antigravityHasExplicitCreditsBalanceExhaustedReason(body)
+		for _, detail := range gjson.GetBytes(body, "error.details").Array() {
+			if detail.Get("@type").String() == "type.googleapis.com/google.rpc.ErrorInfo" &&
+				strings.EqualFold(strings.TrimSpace(detail.Get("reason").String()), "QUOTA_EXHAUSTED") {
+				explicitQuota = true
+				break
+			}
+		}
+		lowerBody := strings.ToLower(string(body))
+		for _, keyword := range antigravityQuotaExhaustedKeywords {
+			if strings.Contains(lowerBody, keyword) {
+				explicitQuota = true
+				break
+			}
+		}
+		err.credentialScoped = explicitQuota
+		if err.retryAfter == nil {
+			delay := antigravityBareResourceExhaustedCooldown
+			err.retryAfter = &delay
+		}
+		return err
+	}
 	if decideAntigravity429(body).kind != antigravity429DecisionFullQuotaExhausted {
 		return err
 	}
-	// One Google account serves every Gemini tier. Hold the credential, and
-	// supply a delay when Google did not, so the conductor does not retry each
-	// model on its one-second ladder.
+	// Legacy policy holds the credential and supplies missing reset guidance.
+	// The conductor must not retry each model on its one-second ladder.
 	err.credentialScoped = true
 	if err.retryAfter == nil {
 		delay := antigravityBareResourceExhaustedCooldown
