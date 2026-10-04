@@ -58,9 +58,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequestForExecutor(e.cfg, codexWebsocketPayloadSelector(ctx), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	finalizePayload := helps.NewPayloadFinalizer(e.cfg, codexWebsocketPayloadSelector(ctx), baseModel, to.String(), "", originalTranslated, req, opts)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	if bridge != nil {
 		body = codexHTTPPayload(ctx, body)
@@ -106,6 +104,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	if errPromptCache != nil {
 		return resp, errPromptCache
 	}
+	body = finalizePayload(helps.SanitizeCodexInputItemIDs(body))
+	if bridge != nil {
+		// Payload rules cannot add ancestry to an independent pooled request.
+		body = codexHTTPPayload(ctx, body)
+	}
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	if bridge == nil {
 		wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
@@ -150,7 +153,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		sess = newEphemeralCodexWebsocketSession()
 	}
 
-	wsReqBody := buildCodexWebsocketRequestBodyForContext(ctx, body)
+	wsReqBody := frameCodexWebsocketRequestBody(body)
 	wsReqLog := helps.UpstreamRequestLog{
 		URL:       wsURL,
 		Method:    "WEBSOCKET",
@@ -275,7 +278,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 				}
 				readCh = sess.activate(conn)
 				restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
-				wsReqBodyRetry := buildCodexWebsocketRequestBody(body)
+				wsReqBodyRetry := frameCodexWebsocketRequestBody(body)
 				helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 					URL:       wsURL,
 					Method:    "WEBSOCKET",

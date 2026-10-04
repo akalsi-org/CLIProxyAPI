@@ -142,25 +142,11 @@ func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) 
 }
 
 func buildCodexWebsocketRequestBody(body []byte) []byte {
-	if len(body) == 0 {
-		return nil
-	}
-
-	// Match codex-rs websocket v2 semantics: every request is `response.create`.
-	// Incremental follow-up turns continue on the same websocket using
-	// `previous_response_id` + incremental `input`, not `response.append`.
-	return encodeCodexWebsocketCreate(helps.SanitizeCodexInputItemIDs(body))
+	return frameCodexWebsocketRequestBody(helps.SanitizeCodexInputItemIDs(body))
 }
 
-func buildCodexWebsocketRequestBodyForContext(ctx context.Context, body []byte) []byte {
-	if codexHTTPBridge(ctx) != nil {
-		// HTTP cacheHelper already sanitized the final body before deriving its handshake headers.
-		return encodeCodexWebsocketCreate(body)
-	}
-	return buildCodexWebsocketRequestBody(body)
-}
-
-func encodeCodexWebsocketCreate(body []byte) []byte {
+// Framing must not normalize the configured business payload.
+func frameCodexWebsocketRequestBody(body []byte) []byte {
 	if len(body) == 0 {
 		return nil
 	}

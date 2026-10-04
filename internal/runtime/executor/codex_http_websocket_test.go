@@ -993,10 +993,9 @@ func TestCodexHTTPWebsocketNormalizationDoesNotCopyCanonicalLargeBody(t *testing
 }
 
 func TestCodexHTTPWebsocketFrameUsesSanitizedHTTPBody(t *testing.T) {
-	ctx := context.WithValue(context.Background(), codexHTTPWebsocketContextKey{}, &codexHTTPWebsocketBridge{})
 	body := helps.SanitizeCodexInputItemIDs([]byte(`{"model":"gpt-5.4","input":[{"type":"message","id":"original","content":"hello"}]}`))
 	original := bytes.Clone(body)
-	got := buildCodexWebsocketRequestBodyForContext(ctx, body)
+	got := frameCodexWebsocketRequestBody(body)
 	want := buildCodexWebsocketRequestBody(body)
 	if !bytes.Equal(got, want) || !bytes.Equal(body, original) {
 		t.Fatalf("HTTP frame encoding changed: got=%s want=%s", got, want)

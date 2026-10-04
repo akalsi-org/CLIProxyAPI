@@ -97,7 +97,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}
 	}
 
-	wsReqBody := buildCodexWebsocketRequestBodyForContext(ctx, clientBody)
+	wsReqBody := frameCodexWebsocketRequestBody(clientBody)
 	wsReqLog := helps.UpstreamRequestLog{
 		URL:       wsURL,
 		Method:    "WEBSOCKET",
@@ -229,7 +229,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			}
 			readCh = sess.activate(conn)
 			restoreMultiAgentV2 = !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
-			wsReqBodyRetry := buildCodexWebsocketRequestBody(clientBody)
+			wsReqBodyRetry := frameCodexWebsocketRequestBody(clientBody)
 			helps.RecordAPIWebsocketRequest(ctx, e.cfg, helps.UpstreamRequestLog{
 				URL:       wsURL,
 				Method:    "WEBSOCKET",
@@ -869,9 +869,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		return nil, err
 	}
 
-	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	requestPath := helps.PayloadRequestPath(opts)
-	body = helps.ApplyPayloadConfigWithRequestForExecutor(e.cfg, codexWebsocketPayloadSelector(ctx), baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	finalizePayload := helps.NewPayloadFinalizer(e.cfg, codexWebsocketPayloadSelector(ctx), baseModel, to.String(), "", originalTranslated, req, opts)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	reasoningSummaryDelivery := gjson.GetBytes(body, "stream_options.reasoning_summary_delivery")
 	body = codexHTTPPayload(ctx, body)
@@ -915,7 +913,11 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if errPromptCache != nil {
 		return nil, errPromptCache
 	}
-	if codexHTTPBridge(ctx) == nil {
+	body = finalizePayload(helps.SanitizeCodexInputItemIDs(body))
+	if codexHTTPBridge(ctx) != nil {
+		// Payload rules cannot add ancestry to an independent pooled request.
+		body = codexHTTPPayload(ctx, body)
+	} else {
 		wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 		applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 		applyModelHeaderOverrides(wsHeaders, baseModel)
