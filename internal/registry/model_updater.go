@@ -125,7 +125,6 @@ func tryRefreshModels(ctx context.Context, label string) {
 	if len(parsed.Meta) == 0 && oldData != nil && len(oldData.Meta) > 0 {
 		parsed.Meta = oldData.Meta
 	}
-	applyForkCatalogAdditions(parsed)
 
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
@@ -322,7 +321,6 @@ func loadModelsFromBytes(data []byte, source string) error {
 	if err := validateModelsCatalog(&parsed); err != nil {
 		return fmt.Errorf("%s: validate models catalog: %w", source, err)
 	}
-	applyForkCatalogAdditions(&parsed)
 
 	modelsCatalogStore.mu.Lock()
 	modelsCatalogStore.data = &parsed
