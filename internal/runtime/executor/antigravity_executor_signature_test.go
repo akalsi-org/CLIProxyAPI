@@ -717,6 +717,10 @@ func TestAntigravityRequestPathsDoNotFallbackEndpoints(t *testing.T) {
 				calls := make([]upstreamCall, 0, 1)
 				transportErr := errors.New("daily endpoint unavailable")
 				ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Path == antigravityQuotaSummaryPath {
+						// The throttling classifier may consult quota; it is not an endpoint fallback.
+						return nil, errors.New("quota summary unavailable")
+					}
 					calls = append(calls, upstreamCall{host: req.URL.Host, path: req.URL.Path})
 					if failure.transport {
 						return nil, transportErr

@@ -179,11 +179,12 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(e.cfg, httpResp.StatusCode, bodyBytes)
+		err = e.antigravityStatusErr(ctx, auth, token, baseModel, httpResp.StatusCode, bodyBytes)
 		return resp, err
 	}
 
 	// Success
+	resetAntigravityThrottle(auth, baseModel)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}
@@ -395,11 +396,12 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(e.cfg, httpResp.StatusCode, bodyBytes)
+		err = e.antigravityStatusErr(ctx, auth, token, baseModel, httpResp.StatusCode, bodyBytes)
 		return resp, err
 	}
 
 	// Stream success
+	resetAntigravityThrottle(auth, baseModel)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}

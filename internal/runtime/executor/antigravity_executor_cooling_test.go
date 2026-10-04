@@ -135,6 +135,11 @@ func TestAntigravityCoolingManagerIsolation(t *testing.T) {
 				var calls atomic.Int32
 				var failed atomic.Bool
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == antigravityQuotaSummaryPath {
+						// Quota remains, so the bare 429 is throttling.
+						_, _ = io.WriteString(w, `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-5h","remainingFraction":1,"resetTime":"2999-01-01T00:00:00Z"}]}]}`)
+						return
+					}
 					calls.Add(1)
 					body, _ := io.ReadAll(r.Body)
 					if gjson.GetBytes(body, "model").String() == "gemini-3.8-flash-high" && !failed.Swap(true) {
@@ -165,12 +170,15 @@ func TestAntigravityCoolingManagerIsolation(t *testing.T) {
 				}
 				snapshot, _ := manager.GetByID(auth.ID)
 				state := snapshot.ModelStates["gemini-3.8-flash-high"]
-				if state == nil || !state.Unavailable || state.NextRetryAfter.Sub(state.UpdatedAt) != 5*time.Minute {
-					t.Fatalf("canonical model A must retain the five-minute hold: %#v", state)
+				// Throttling with quota remaining backs off briefly: 10s with 20% jitter, floored at 10s.
+				if state == nil || !state.Unavailable {
+					t.Fatalf("canonical model A must be held: %#v", state)
 				}
-				credentialScoped := snapshot.Quota.Reason == "credential_quota"
-				if credentialScoped != !enabled {
-					t.Fatalf("credential quota scope does not match policy: %#v", snapshot.Quota)
+				if hold := state.NextRetryAfter.Sub(state.UpdatedAt); hold < 10*time.Second || hold > 12*time.Second {
+					t.Fatalf("throttling hold = %s, want 10s..12s", hold)
+				}
+				if snapshot.Quota.Reason == "credential_quota" {
+					t.Fatalf("throttling must not hold the whole credential: %#v", snapshot.Quota)
 				}
 				for _, model := range []string{"gemini-3.8-flash-high", "gemini-3.8-flash-high(low)", "cooling-alias", "cooling-alias(low)"} {
 					if err := executeAntigravityCoolingTest(manager, model, stream); err == nil {
@@ -181,18 +189,11 @@ func TestAntigravityCoolingManagerIsolation(t *testing.T) {
 					t.Fatalf("blocked model A made upstream calls: %d", got)
 				}
 				for _, model := range []string{"gemini-3.8-pro-high", "gemini-3.8-pro-low"} {
-					err := executeAntigravityCoolingTest(manager, model, stream)
-					if enabled && err != nil {
+					if err := executeAntigravityCoolingTest(manager, model, stream); err != nil {
 						t.Fatalf("sibling %s was blocked: %v", model, err)
 					}
-					if !enabled && err == nil {
-						t.Fatalf("legacy credential hold allowed sibling %s", model)
-					}
 				}
-				wantCalls := int32(1)
-				if enabled {
-					wantCalls = 3
-				}
+				wantCalls := int32(3)
 				if calls.Load() != wantCalls {
 					t.Fatalf("upstream calls = %d, want %d", calls.Load(), wantCalls)
 				}
@@ -201,12 +202,6 @@ func TestAntigravityCoolingManagerIsolation(t *testing.T) {
 				manager.RefreshSchedulerEntry(auth.ID)
 				if err := executeAntigravityCoolingTest(manager, "gemini-3.8-flash-high", stream); err == nil || calls.Load() != wantCalls {
 					t.Fatal("configuration update cleared an active hold")
-				}
-				if !enabled {
-					if err := executeAntigravityCoolingTest(manager, "gemini-3.8-pro-low", stream); err == nil || calls.Load() != wantCalls {
-						t.Fatal("enabling model cooling cleared the prior credential-wide hold")
-					}
-					return
 				}
 				// Move retained deadlines into the past. No wall-clock wait is required.
 				snapshot, _ = manager.GetByID(auth.ID)
@@ -303,8 +298,8 @@ func TestAntigravityCoolingClaudeExecuteUsesPolicy(t *testing.T) {
 		Payload: []byte(`{"request":{"contents":[{"role":"user","parts":[{"text":"synthetic diagnostic"}]}]}}`),
 	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatAntigravity})
 	status, ok := err.(statusErr)
-	if !ok || status.IsCredentialScoped() || status.RetryAfter() == nil || *status.RetryAfter() != 5*time.Minute {
-		t.Fatalf("non-Gemini Execute did not apply model cooling: %v", err)
+	if !ok || status.IsCredentialScoped() || status.RetryAfter() == nil || *status.RetryAfter() < 8*time.Second || *status.RetryAfter() > 12*time.Second {
+		t.Fatalf("non-Gemini Execute did not apply the throttling backoff: %v", err)
 	}
 }
 

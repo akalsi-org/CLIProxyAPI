@@ -282,6 +282,10 @@ func TestAntigravityExecute_DoesNotUseRequestRetryForInternalRetries(t *testing.
 
 	var requestCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == antigravityQuotaSummaryPath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		requestCount++
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`))

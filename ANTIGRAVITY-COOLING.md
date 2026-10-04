@@ -58,14 +58,36 @@ Home-controlled nodes require the setting in their authoritative Home-delivered 
 The my-init template supplies `default-cli-project`, but existing live configs remain unchanged.
 A compatible binary and explicit configuration rollout are required before running requests use this setting.
 
-The original Google 429 remains unexplained.
 This override permits an explicit project choice; it does not prove native/proxy project equivalence.
+It did not prevent the bare 429s described below.
+
+## Bare RESOURCE_EXHAUSTED is throttling
+
+Google returns a bare `429 RESOURCE_EXHAUSTED` with no `RetryInfo`, no `ErrorInfo` reason, and no named limit.
+On 2026-10-04 the account quota summary (`v1internal:retrieveUserQuotaSummary`) reported the Gemini 5-hour bucket at 100% and the weekly bucket at 94% while such 429s occurred.
+Proxy logs since 2026-09-18 show each episode followed a burst of about 5–16 requests per minute.
+Retries after 2, 3, 5, 9, 18, 40, and 65 seconds kept receiving 429 for one to four minutes.
+Native `agy` receives the same responses; it retries model calls inside the request with exponential backoff and jitter.
+
+The executor therefore treats a bare 429 as follows:
+
+1. It reads the account quota summary, cached for 30 seconds per credential.
+2. If an exhausted bucket covers the failed model's group, it holds that model until the bucket's `resetTime`.
+   Proto3 JSON omits a zero `remainingFraction`, so a missing value with a future reset counts as exhausted.
+3. Otherwise it holds only the failed model for 10, 20, 40, and then 60 seconds, with ±20% jitter.
+   A success resets the ladder. The conductor floors supplied delays at 10 seconds.
+4. If the summary is unavailable, it uses the same ladder.
+
+The conductor waits for a hold no longer than `max-retry-interval` and retries within the same request, as `agy` does.
+Set `request-retry` and `max-retry-interval` (for example 3 and 60) to enable that wait; both default to zero.
+Explicit `QUOTA_EXHAUSTED`, credits-balance, and `RATE_LIMIT_EXCEEDED` responses keep their previous handling.
+This replaces PR #6335's flat five-minute credential-wide hold for bare responses only.
 
 ## Optional local policy
 
 The canonical `upstream.antigravity.model-level-cooling` setting defaults to false.
 Legacy `antigravity.model-level-cooling` also works.
-Missing or false preserves the previous policy, including credential-wide cooling for bare resource exhaustion.
+Missing or false preserves the previous policy for responses other than a bare `RESOURCE_EXHAUSTED`.
 The option does not disable cooling or grant additional Google quota.
 
 ```yaml
@@ -74,14 +96,13 @@ upstream:
     model-level-cooling: true
 ```
 
-When enabled, ambiguous resource exhaustion holds the failed canonical model rather than every model on the credential.
-The failed model keeps the five-minute fallback.
+When enabled, ambiguous rate limits hold the failed canonical model rather than every model on the credential.
 Longer explicit provider reset guidance remains intact.
 Explicit quota rejection retains conservative existing handling unless supported evidence establishes narrower scope.
 Aliases and thinking suffixes cannot bypass the same canonical model's hold.
 Existing active credential holds are not cleared merely because this option changes.
 
-This limits local outage amplification; it does not establish why Google's response differs from native `agy`.
+This limits local outage amplification.
 Live enablement, release installation, and service restart require a separate operator-approved rollout.
 
 ## Validation

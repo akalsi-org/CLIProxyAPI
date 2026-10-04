@@ -184,11 +184,12 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// Report the upstream failure rather than the cleanup failure.
 			logAntigravityReasoningReplayDegraded(replayScope, "invalidate", errClear)
 		}
-		err = newAntigravityStatusErr(e.cfg, httpResp.StatusCode, bodyBytes)
+		err = e.antigravityStatusErr(ctx, auth, token, baseModel, httpResp.StatusCode, bodyBytes)
 		return nil, err
 	}
 
 	// Stream success
+	resetAntigravityThrottle(auth, baseModel)
 	if useCredits {
 		clearAntigravityCreditsFailureState(auth)
 	}

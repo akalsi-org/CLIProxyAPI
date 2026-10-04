@@ -2,7 +2,7 @@
 
 This fork follows `router-for-me/CLIProxyAPI` main and publishes tested Linux amd64 snapshots.
 It preserves upstream history and the upstream Go module path.
-It includes PR #6335's credential-wide Antigravity quota cooldown.
+It includes PR #6335's Antigravity quota cooldown, except that a bare `RESOURCE_EXHAUSTED` uses the quota-aware model backoff in `ANTIGRAVITY-COOLING.md`.
 The original patch commit is `c2f8accb748095a31745f4b86025a13199fd4d59`.
 The obsolete fork-only provider overlay is retired; upstream provider implementations remain upstream-owned.
 
