@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2766,11 +2767,14 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		payloadReceived := make(chan struct{})
 		go func() {
+			var receivedOnce sync.Once
 			for {
 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
 					return
 				}
+				receivedOnce.Do(func() { close(payloadReceived) })
 			}
 		}()
 
@@ -2797,6 +2801,14 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return
 		}
 
+		// Reply after the request arrives. An earlier reply lets the client finish
+		// and close the socket while its own write is still in progress.
+		select {
+		case <-payloadReceived:
+		case <-time.After(2 * time.Second):
+			t.Errorf("timed out waiting for client payload")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
