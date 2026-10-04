@@ -53,6 +53,10 @@ Busy capacity selects HTTP before sending an upstream WebSocket request.
 There is no acquisition wait queue.
 Idle retention lasts at most 60 seconds.
 Idle cleanup does not impose a generation timeout.
+The default Codex WebSocket application-read inactivity deadline is one hour.
+The handshake timeout remains 30 seconds.
+The provider can still close its connection earlier.
+These socket settings do not control provider prompt-cache retention.
 
 Reuse requires compatible caller scope, credential epoch, endpoint, proxy, and final handshake headers.
 Changed caller headers can prevent reuse.
