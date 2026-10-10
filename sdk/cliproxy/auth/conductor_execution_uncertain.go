@@ -8,7 +8,7 @@ import (
 
 // Ambiguous execution failures describe transport uncertainty, not credential availability.
 func (m *Manager) recordUncertainExecutionResult(ctx context.Context, auth *Auth, provider, model, routeModel string, opts cliproxyexecutor.Options, err error, ephemeral bool) {
-	result := Result{AuthID: auth.ID, Provider: provider, Model: model, RouteModel: routeModel, Error: resultErrorFromError(err), Options: opts}
+	result := Result{AuthID: auth.ID, Provider: provider, Model: model, RouteModel: routeModel, Error: resultErrorFromError(err), Options: opts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch}
 	if ephemeral {
 		m.reportHomeResult(ctx, result, auth)
 		return
