@@ -402,6 +402,23 @@ func TestCodexHTTPWebsocketDisabledAndPassthroughRemainHTTP(t *testing.T) {
 	}
 }
 
+func TestCodexHTTPWebsocketSIWCRemainsHTTP(t *testing.T) {
+	upstream := newCodexHTTPTestUpstream(t, nil, 0)
+	exec := codexHTTPTestExecutor(t)
+	auth := codexHTTPTestAuth(t, upstream)
+	// The pooled bridge sends HTTP-shaped payloads; SIWC needs its own body rules.
+	auth.Attributes["use_siwc"] = "true"
+	auth.Metadata = map[string]any{"siwc": map[string]any{"access_token": "siwc-token"}}
+	req, opts := codexHTTPTestRequest(sdktranslator.FormatOpenAIResponse)
+	result, err := exec.Execute(context.Background(), auth, req, opts)
+	if err != nil || !strings.Contains(string(result.Payload), "ok") {
+		t.Fatal(err)
+	}
+	if upstream.upgrades.Load() != 0 {
+		t.Fatal("SIWC request used the pooled websocket bridge")
+	}
+}
+
 func TestCodexHTTPWebsocketPartialWritesNeverReplay(t *testing.T) {
 	for _, streaming := range []bool{false, true} {
 		t.Run(fmt.Sprint(streaming), func(t *testing.T) {

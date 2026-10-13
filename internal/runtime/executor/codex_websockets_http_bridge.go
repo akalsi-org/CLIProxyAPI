@@ -64,7 +64,7 @@ func (e *CodexAutoExecutor) httpWebsocketContext(ctx context.Context, auth *clip
 	}
 	pool := e.httpPool
 	e.httpPoolMu.Unlock()
-	if cliproxyexecutor.DownstreamWebsocket(ctx) || !codexWebsocketsEnabled(auth) || opts.ExecutionLifecycle != nil || cliproxyexecutor.WebsocketInputFromContext(ctx) != nil || opts.Alt == "responses/compact" || isCodexOpenAIImageRequest(opts) || grokbuild.IsGrokClientContext(ctx, opts.Headers) || executionSessionIDFromOptions(opts) != "" || e.httpExec.cfg.PassthroughHeaders || cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+	if cliproxyexecutor.DownstreamWebsocket(ctx) || !codexWebsocketsEnabled(auth) || codexUseSIWC(auth) || opts.ExecutionLifecycle != nil || cliproxyexecutor.WebsocketInputFromContext(ctx) != nil || opts.Alt == "responses/compact" || isCodexOpenAIImageRequest(opts) || grokbuild.IsGrokClientContext(ctx, opts.Headers) || executionSessionIDFromOptions(opts) != "" || e.httpExec.cfg.PassthroughHeaders || cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
 		return ctx, false
 	}
 	bridge := &codexHTTPWebsocketBridge{pool: pool}
