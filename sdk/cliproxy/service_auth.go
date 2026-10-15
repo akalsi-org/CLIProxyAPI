@@ -116,6 +116,9 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 	if s.authRevisions == nil {
 		s.authRevisions = make(map[string]uint64)
 	}
+	if s.authSnapshotOverwrites == nil {
+		s.authSnapshotOverwrites = make(map[string]authSnapshotOverwrite)
+	}
 
 	filtered := make([]watcher.AuthUpdate, 0, len(updates))
 	skippedWaits := make([]chan struct{}, 0)
@@ -175,10 +178,17 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 			if update.Auth == nil || update.Auth.ID == "" {
 				continue
 			}
-			auth := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
+			replacedGeneration := uint64(0)
+			restoresOverwrite := false
+			if existing, ok := s.coreManager.GetByID(update.Auth.ID); ok && existing != nil {
+				replacedGeneration = existing.Generation
+				restoresOverwrite = s.authSnapshotOverwrites[update.Auth.ID].restoredBy(existing, update.Auth)
+			}
+			auth := s.prepareCoreAuthForModelRegistrationOrdered(registrationCtx, update.Auth, restoresOverwrite)
 			if auth == nil {
 				continue
 			}
+			s.recordAuthSnapshotOverwrite(update.Auth, auth, replacedGeneration)
 			needsAliasRebuild = true
 			authForRegistration := auth
 			expectedGeneration := authForRegistration.Generation
@@ -234,6 +244,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 				}
 			}
 			s.applyCoreAuthRemoval(registrationCtx, id)
+			delete(s.authSnapshotOverwrites, id)
 			needsAliasRebuild = true
 		default:
 			log.Debugf("received unknown auth update action: %v", update.Action)
@@ -412,7 +423,43 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	s.completeModelRegistrationForAuth(ctx, auth)
 }
 
+// authSnapshotOverwrite describes an unversioned file snapshot (generation 0)
+// that replaced a versioned core state. The snapshot can be read before a
+// management persist and applied after it. The persist's own update then has
+// an older generation than the snapshot result and looks stale.
+type authSnapshotOverwrite struct {
+	replaced uint64 // Core generation that the snapshot replaced.
+	produced uint64 // Core generation that the snapshot apply produced.
+}
+
+// restoredBy reports whether incoming must replace the snapshot result. It is
+// true only when the core state is still the snapshot result and incoming is a
+// versioned state at least as new as the state that the snapshot replaced.
+func (o authSnapshotOverwrite) restoredBy(existing, incoming *coreauth.Auth) bool {
+	return o.produced > 0 && existing != nil && incoming != nil &&
+		existing.Generation == o.produced &&
+		incoming.Generation > 0 && incoming.Generation >= o.replaced
+}
+
+// recordAuthSnapshotOverwrite must run under authUpdateMu.
+func (s *Service) recordAuthSnapshotOverwrite(incoming, applied *coreauth.Auth, replacedGeneration uint64) {
+	if incoming == nil || applied == nil {
+		return
+	}
+	if incoming.Generation == 0 && replacedGeneration > 0 && applied.Generation > replacedGeneration {
+		s.authSnapshotOverwrites[applied.ID] = authSnapshotOverwrite{replaced: replacedGeneration, produced: applied.Generation}
+		return
+	}
+	delete(s.authSnapshotOverwrites, applied.ID)
+}
+
 func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth *coreauth.Auth) *coreauth.Auth {
+	return s.prepareCoreAuthForModelRegistrationOrdered(ctx, auth, false)
+}
+
+// prepareCoreAuthForModelRegistrationOrdered skips the generation staleness
+// check when restoresOverwrite is true. See authSnapshotOverwrite.
+func (s *Service) prepareCoreAuthForModelRegistrationOrdered(ctx context.Context, auth *coreauth.Auth, restoresOverwrite bool) *coreauth.Auth {
 	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
 		return nil
 	}
@@ -425,7 +472,7 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 	op := "register"
 	var err error
 	if existing, ok := s.coreManager.GetByID(auth.ID); ok {
-		if isStaleCoreAuth(existing, auth) {
+		if isStaleCoreAuth(existing, auth) && !restoresOverwrite {
 			log.Debugf("skipping stale auth update for %s: incoming gen=%d, existing gen=%d", auth.ID, auth.Generation, existing.Generation)
 			return existing
 		}

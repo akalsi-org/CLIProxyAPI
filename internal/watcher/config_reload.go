@@ -49,6 +49,12 @@ func (w *Watcher) ReloadConfigIfChanged() {
 }
 
 func (w *Watcher) reloadConfigIfChanged() {
+	// Management saves, the debounce timer, and explicit callers can reload at
+	// the same time. Serialize the whole read, apply, and hash step so that an
+	// older read cannot publish its config after a newer one.
+	w.configLoadMu.Lock()
+	defer w.configLoadMu.Unlock()
+
 	data, err := os.ReadFile(w.configPath)
 	if err != nil {
 		log.Errorf("failed to read config file for hash check: %v", err)
@@ -70,26 +76,32 @@ func (w *Watcher) reloadConfigIfChanged() {
 		return
 	}
 	log.Infof("config file changed, reloading: %s", w.configPath)
-	if w.reloadConfig() {
-		finalHash := newHash
-		if updatedData, errRead := os.ReadFile(w.configPath); errRead == nil && len(updatedData) > 0 {
-			sumUpdated := sha256.Sum256(updatedData)
-			finalHash = hex.EncodeToString(sumUpdated[:])
-		} else if errRead != nil {
-			log.WithError(errRead).Debug("failed to compute updated config hash after reload")
-		}
+	if w.reloadConfigData(data) {
+		// Record the hash of the bytes that were applied. Do not hash a second
+		// read: a concurrent save can land in between, and its own reload would
+		// then match that hash and skip. If the loader rewrote the file itself,
+		// the resulting change event reloads the rewritten content once.
 		w.clientsMutex.Lock()
-		w.lastConfigHash = finalHash
+		w.lastConfigHash = newHash
 		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
 	}
 }
 
 func (w *Watcher) reloadConfig() bool {
+	data, err := os.ReadFile(w.configPath)
+	if err != nil {
+		log.Errorf("failed to reload config: failed to read config file: %v", err)
+		return false
+	}
+	return w.reloadConfigData(data)
+}
+
+func (w *Watcher) reloadConfigData(data []byte) bool {
 	log.Debug("=========================== CONFIG RELOAD ============================")
 	log.Debugf("starting config reload from: %s", w.configPath)
 
-	newConfig, errLoadConfig := config.LoadConfig(w.configPath)
+	newConfig, errLoadConfig := config.LoadConfigData(w.configPath, data)
 	if errLoadConfig != nil {
 		log.Errorf("failed to reload config: %v", errLoadConfig)
 		return false

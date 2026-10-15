@@ -163,6 +163,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if gjson.GetBytes(payloads[i], "type").String() == "response.created" {
 					responseStarted = true
 					completed = false
+					opts.localInterrupt.begin()
 					outputItemsByIndex = make(map[int64][]byte)
 					outputItemsFallback = nil
 					pendingToolCallIDs = make(map[string]struct{})
@@ -197,6 +198,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// reason "interrupted", to acknowledge response.interrupt. Closing
 					// the client socket here would block the follow-up request.
 					completed = true
+					// Stop local interrupt delivery before the client can observe the
+					// terminal event. A later interrupt then gets the inactive-turn
+					// result instead of racing this loop's exit.
+					opts.localInterrupt.end()
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
 				}

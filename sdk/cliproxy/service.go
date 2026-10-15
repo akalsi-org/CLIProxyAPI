@@ -40,6 +40,9 @@ type Service struct {
 	executorRegistrationMu sync.Mutex
 	authUpdateMu           sync.Mutex
 	authRevisions          map[string]uint64
+	// authSnapshotOverwrites records unversioned file snapshots that replaced
+	// a versioned core state. Guarded by authUpdateMu.
+	authSnapshotOverwrites map[string]authSnapshotOverwrite
 	authRegWaitMu          sync.Mutex
 	authRegWaiters         map[string]chan struct{}
 	configSequence         uint64
