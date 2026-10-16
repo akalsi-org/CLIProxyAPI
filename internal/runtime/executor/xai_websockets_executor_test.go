@@ -2232,6 +2232,7 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
+	requestReceived := make(chan struct{})
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
 		close(inWriteHook)
@@ -2261,6 +2262,8 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
 				}
+				close(requestReceived)
+				return
 			}
 		}()
 
@@ -2285,6 +2288,12 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 		}
 
 		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
+		select {
+		case <-requestReceived:
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for uploaded request")
+			return
+		}
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
 	defer server.Close()
@@ -2328,6 +2337,7 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
 	pongDeliveredDuringWrite := make(chan struct{})
+	requestReceived := make(chan struct{})
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
 		close(inWriteHook)
@@ -2357,6 +2367,8 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
 				}
+				close(requestReceived)
+				return
 			}
 		}()
 
@@ -2381,6 +2393,12 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 		}
 
 		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
+		select {
+		case <-requestReceived:
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for uploaded request")
+			return
+		}
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
 	defer server.Close()

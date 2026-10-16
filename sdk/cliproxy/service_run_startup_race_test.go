@@ -14,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internalregistry "github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -165,9 +166,13 @@ func TestServiceRun_WatcherReloadConcurrentWithStartupModelRegistration_Issue658
 	}
 
 	var errBuild error
+	tokenStore := sdkauth.NewFileTokenStore()
+	tokenStore.SetBaseDir(authDir)
+	coreManager := coreauth.NewManager(tokenStore, &coreauth.RoundRobinSelector{}, nil)
 	service, errBuild = NewBuilder().
 		WithConfig(initialCfg).
 		WithConfigPath(cfgPath).
+		WithCoreAuthManager(coreManager).
 		WithWatcherFactory(customWatcherFactory).
 		Build()
 	if errBuild != nil {
