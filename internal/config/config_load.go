@@ -163,6 +163,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 				cfg.NormalizePluginsConfig()
+				cfg.NormalizeClaudeConfig()
 				return cfg, nil
 			}
 		}
@@ -184,6 +185,7 @@ func loadConfigData(configFile string, data []byte, optional bool) (*Config, err
 	if optional && len(bytes.TrimSpace(data)) == 0 {
 		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 		cfg.NormalizePluginsConfig()
+		cfg.NormalizeClaudeConfig()
 		return cfg, nil
 	}
 
@@ -191,6 +193,7 @@ func loadConfigData(configFile string, data []byte, optional bool) (*Config, err
 		if optional {
 			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 			cfgOptional.NormalizePluginsConfig()
+			cfgOptional.NormalizeClaudeConfig()
 			return cfgOptional, nil
 		}
 		return nil, errValidate
@@ -222,6 +225,7 @@ func loadConfigData(configFile string, data []byte, optional bool) (*Config, err
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 			cfgOptional.NormalizePluginsConfig()
+			cfgOptional.NormalizeClaudeConfig()
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
@@ -291,6 +295,7 @@ func loadConfigData(configFile string, data []byte, optional bool) (*Config, err
 	}
 
 	cfg.NormalizePluginsConfig()
+	cfg.NormalizeClaudeConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
 		return nil, errResolvePluginsDir
 	}
