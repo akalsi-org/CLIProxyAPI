@@ -11,9 +11,10 @@ cmd="${1:-shell}"
 if [ "$#" -gt 0 ]; then shift; fi
 case "$cmd" in
   help|-h|--help)
-    printf 'Usage: ./repo.sh [setup|test|check-pr|build|help|COMMAND [ARGS...]]\n'
+    printf 'Usage: ./repo.sh [setup|test-maintenance|test [GO_FLAGS...]|check-pr|build|diagnose-upstream REPORT [FLAGS...]|help|COMMAND [ARGS...]]\n'
     printf 'No arguments enters the fork tooling shell. Run setup once to install verified Go 1.26.4.\n'
     exit 0 ;;
+  test-maintenance) exec python3 -m unittest discover -s .github/scripts -p '*_test.py' "$@" ;;
   setup)
     [ "$(uname -s)" = Linux ] && [ "$REPO_ARCH" = x86_64 ] || { printf 'Fork setup requires Linux x86_64.\n' >&2; exit 1; }
     archive="$REPO_LOCAL/toolchains/go1.26.4.tar.gz"
@@ -36,7 +37,8 @@ esac
 export GOPROXY=off
 case "$cmd" in
   shell) exec bash --noprofile --norc -i ;;
-  test) python3 -m unittest discover -s .github/scripts -p '*_test.py'; exec go test ./... ;;
+  test) "$ROOT/repo.sh" test-maintenance >&2; exec go test "$@" ./... ;;
+  diagnose-upstream) exec python3 -I "$ROOT/.github/scripts/fork-upstream-diagnose.py" "$@" ;;
   check-pr) exec go test ./internal/runtime/executor -run 'TestClassifyAntigravity429|TestDecideAntigravity429|TestNewAntigravityStatusErr' -count=1 ;;
   build) mkdir -p "$REPO_LOCAL/bin"; CGO_ENABLED=1 go build -o "$REPO_LOCAL/bin/cli-proxy-api" ./cmd/server/ ;;
   *) exec "$cmd" "$@" ;;

@@ -61,7 +61,7 @@ def require_forward_baseline(upstream_tag, previous_tag):
 
 
 def merge_upstream(fork_sha, upstream_sha):
-  command = ['git', 'merge', '--no-commit', '--no-ff', upstream_sha]
+  command = ['git', 'merge', '--no-commit', '--no-ff', '--strategy=ort', upstream_sha]
   try:
     result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=True)
   except subprocess.CalledProcessError as error:

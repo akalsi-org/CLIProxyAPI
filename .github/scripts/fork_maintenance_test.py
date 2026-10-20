@@ -98,6 +98,14 @@ class MaintenanceTests(unittest.TestCase):
       api.assert_not_called()
     self.assertFalse(any('push' in argv for argv in calls))
 
+  def test_merge_explicitly_selects_ort_without_side_selection(self):
+    result = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+    with patch.object(maintenance.subprocess, 'run', return_value=result) as merge:
+      maintenance.merge_upstream('f' * 40, 'a' * 40)
+    command = merge.call_args.args[0]
+    self.assertIn('--strategy=ort', command)
+    self.assertFalse(any('ours' in argument or 'theirs' in argument for argument in command))
+
   def test_merge_git_failure_without_conflicts_preserves_cause(self):
     error = subprocess.CalledProcessError(128, ['git', 'merge'],
       output='merge detail\n', stderr='fatal: missing object\n')
@@ -311,7 +319,28 @@ class GitIntegrationTests(unittest.TestCase):
     self.assertFalse(any(maintenance.UPSTREAM in argv[2] or argv[2] in ('origin', 'upstream')
       for argv in pushes))
 
-  def test_real_success_keeps_both_parents_and_provenance_compatible(self):
+  def test_real_independent_edits_in_one_file_merge_and_commit_cleanly(self):
+    middle = ''.join(f'unchanged line {number}\n' for number in range(20))
+    base = 'first\n' + middle + 'last\n'
+    (self.root / 'bridge.txt').write_text(base)
+    self.git('commit', '-am', 'shared baseline')
+    self.git('branch', '-f', 'upstream', 'HEAD')
+    (self.root / 'bridge.txt').write_text('fork first\n' + middle + 'last\n')
+    self.git('commit', '-am', 'fork first line')
+    fork_sha = self.git('rev-parse', 'HEAD')
+    self.git('switch', 'upstream')
+    (self.root / 'bridge.txt').write_text('first\n' + middle + 'upstream last\n')
+    self.git('commit', '-am', 'upstream last line')
+    upstream_sha = self.git('rev-parse', 'HEAD')
+    self.git('tag', 'v8.0.13')
+    self.git('switch', 'main')
+    self.assertEqual(self.prepare(), 0, self.stderr.getvalue())
+    self.assertEqual((self.root / 'bridge.txt').read_text(), 'fork first\n' + middle + 'upstream last\n')
+    self.assertEqual(self.git('show', '-s', '--format=%P', 'HEAD'), f'{fork_sha} {upstream_sha}')
+    self.assertEqual(self.git('status', '--porcelain'), '')
+    self.assertEqual(json.loads(self.state.read_text())['upstream_main_sha'], upstream_sha)
+
+  def test_real_upstream_only_file_keeps_both_parents_and_provenance_compatible(self):
     fork_sha, upstream_sha = self.diverge(conflict=False)
     self.assertEqual(self.prepare(), 0, self.stderr.getvalue())
     candidate = json.loads(self.state.read_text())
