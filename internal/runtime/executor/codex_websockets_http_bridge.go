@@ -36,7 +36,10 @@ type codexHTTPWebsocketBridge struct {
 	resource                *codexHTTPWebsocketResource
 	sent, clean, definitive bool
 	stopCancel              func() bool
+	cancelDone              chan struct{}
 	cancelRequest           context.CancelFunc
+	finishOnce              sync.Once
+	finishErr               error
 }
 
 func codexHTTPBridge(ctx context.Context) *codexHTTPWebsocketBridge {
@@ -113,6 +116,13 @@ func codexHTTPPayload(ctx context.Context, body []byte) []byte {
 		}
 	}
 	return body
+}
+
+func (b *codexHTTPWebsocketBridge) normalizeParallelToolCalls(body []byte, headers http.Header) []byte {
+	if b != nil {
+		return normalizeCodexParallelToolCalls(body, headers)
+	}
+	return normalizeCodexWebsocketParallelToolCalls(body, headers)
 }
 
 func codexWebsocketPayloadSelector(ctx context.Context) string {
@@ -205,8 +215,53 @@ func (b *codexHTTPWebsocketBridge) requestContext(ctx context.Context) context.C
 	return ctx
 }
 
+func (b *codexHTTPWebsocketBridge) validatePayload(body []byte) error {
+	if b == nil {
+		return nil
+	}
+	for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+		if gjson.GetBytes(body, field).Exists() {
+			return statusErr{code: http.StatusBadRequest, msg: "codex HTTP websocket: configured payload contains incompatible field " + field}
+		}
+	}
+	if gjson.GetBytes(body, "stream").Type != gjson.True {
+		return statusErr{code: http.StatusBadRequest, msg: "codex HTTP websocket: configured payload requires stream=true"}
+	}
+	return nil
+}
+
+// Mark uncertainty before the write, including partial writes and failed writes.
+func (b *codexHTTPWebsocketBridge) beforeSend(ctx context.Context) {
+	if b == nil {
+		return
+	}
+	b.armCancellation(ctx)
+	b.sent = true
+}
+
+func (b *codexHTTPWebsocketBridge) observeFailure(payload []byte) {
+	if b != nil {
+		b.definitive = codexHTTPDefinitiveFailure(payload)
+	}
+}
+
+func (b *codexHTTPWebsocketBridge) complete(ctx context.Context, reporter *helps.UsageReporter, body, payload []byte) {
+	if b == nil {
+		return
+	}
+	switch gjson.GetBytes(payload, "type").String() {
+	case "response.completed", "response.done", "response.incomplete":
+		b.clean = true
+		publishCodexImageToolUsage(ctx, reporter, body, payload)
+	}
+}
+
 func (b *codexHTTPWebsocketBridge) armCancellation(ctx context.Context) {
-	b.stopCancel = context.AfterFunc(ctx, func() { _ = b.resource.Close() })
+	b.cancelDone = make(chan struct{})
+	b.stopCancel = context.AfterFunc(ctx, func() {
+		defer close(b.cancelDone)
+		_ = b.resource.Close()
+	})
 }
 
 // Only this request owns cancellation. Join its callback before a healthy lease can change owners.
@@ -214,25 +269,31 @@ func (b *codexHTTPWebsocketBridge) finish(err error) error {
 	if b == nil {
 		return err
 	}
-	if b.lease == nil {
+	b.finishOnce.Do(func() {
+		b.finishErr = b.executionError(err)
+		if b.lease == nil {
+			if b.cancelRequest != nil {
+				b.cancelRequest()
+			}
+			return
+		}
+		stopped := true
+		if b.stopCancel != nil {
+			stopped = b.stopCancel()
+			if !stopped {
+				<-b.cancelDone
+			}
+		}
+		healthy := b.clean && err == nil && stopped && b.resource.session.upstreamDisconnectError(b.resource.conn) == nil
+		b.resource.mu.Lock()
+		b.resource.requestCancel = nil
+		b.resource.mu.Unlock()
 		if b.cancelRequest != nil {
 			b.cancelRequest()
 		}
-		return err
-	}
-	stopped := true
-	if b.stopCancel != nil {
-		stopped = b.stopCancel()
-	}
-	healthy := b.clean && err == nil && stopped && b.resource.session.upstreamDisconnectError(b.resource.conn) == nil
-	b.resource.mu.Lock()
-	b.resource.requestCancel = nil
-	b.resource.mu.Unlock()
-	if b.cancelRequest != nil {
-		b.cancelRequest()
-	}
-	b.lease.Release(healthy)
-	return b.executionError(err)
+		b.lease.Release(healthy)
+	})
+	return b.finishErr
 }
 
 func (b *codexHTTPWebsocketBridge) executionError(err error) error {

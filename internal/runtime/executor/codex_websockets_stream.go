@@ -184,10 +184,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		restoreMultiAgentV2 = !multiAgentV2Conflict && optimizeMultiAgentV2
 	}
 
-	if bridge != nil {
-		bridge.armCancellation(ctx)
-		bridge.sent = true
-	}
+	bridge.beforeSend(ctx)
 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
@@ -396,9 +393,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
 			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
-				if bridge != nil {
-					bridge.definitive = codexHTTPDefinitiveFailure(payload)
-				}
+				bridge.observeFailure(payload)
 				if sess != nil {
 					e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 					sess.clearActive(conn, readCh)
@@ -422,9 +417,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return nil, wsErr
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
-				if bridge != nil {
-					bridge.definitive = codexHTTPDefinitiveFailure(payload)
-				}
+				bridge.observeFailure(payload)
 				// A transient capacity rejection is retried on another credential, so the
 				// downstream websocket session must survive this upstream teardown. Notifying
 				// the disconnect here would close the client connection before the retry can
@@ -548,10 +541,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			initialChunks = currentChunks
 			if isTerminalEvent {
 				immediateTerminal = true
-				if bridge != nil {
-					bridge.clean = true
-					publishCodexImageToolUsage(ctx, reporter, clientBody, completedPayload)
-				}
+				bridge.complete(ctx, reporter, clientBody, completedPayload)
 			}
 			break
 		}
@@ -697,9 +687,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 
 			if wsErr, ok := parseCodexWebsocketErrorWithCooling(payload, e.modelLevelCooling()); ok {
-				if bridge != nil {
-					bridge.definitive = codexHTTPDefinitiveFailure(payload)
-				}
+				bridge.observeFailure(payload)
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				// The disconnect notification makes the downstream handler close the client and
@@ -723,9 +711,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 			if streamErr, terminalBody, ok := codexTerminalFailureErrWithCooling(payload, e.modelLevelCooling()); ok {
-				if bridge != nil {
-					bridge.definitive = codexHTTPDefinitiveFailure(payload)
-				}
+				bridge.observeFailure(payload)
 				terminateReason = "upstream_error"
 				terminateErr = streamErr
 				// Publish the downstream disconnect only after the error was delivered, see the
@@ -826,10 +812,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				return
 			}
 			if isTerminalEvent || eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
-				if bridge != nil {
-					bridge.clean = true
-					publishCodexImageToolUsage(ctx, reporter, clientBody, completedPayload)
-				}
+				bridge.complete(ctx, reporter, clientBody, completedPayload)
 				return
 			}
 		}
@@ -879,10 +862,13 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	originalPayload := originalPayloadSource
 	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
-	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntent(from, to, baseModel, originalPayload, req.Payload, true, isCompat)
+	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
+	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntent(from, to, targetModel, originalPayload, req.Payload, true, isCompat)
 	if err != nil {
 		return nil, err
 	}
+	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
+	body = helps.SetStringIfDifferent(body, "model", baseModel)
 
 	body, err = helps.ApplyRequestThinking(body, req, opts, from.String(), to.String(), e.Identifier(), updatesChanged)
 	if err != nil {
@@ -897,18 +883,14 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if codexHTTPBridge(ctx) != nil && reasoningSummaryDelivery.Exists() {
 		body, _ = sjson.SetBytes(body, "stream_options.reasoning_summary_delivery", reasoningSummaryDelivery.Value())
 	}
+	body = ensureWebSearchToolForHistory(body, opts.Headers)
 	if !useSIWC {
 		body = normalizeCodexInstructions(body, preserveNativeOutput)
 		if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 			body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 		}
 	}
-	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompat(ctx, "codex websockets executor", body, isCompat)
-	if codexHTTPBridge(ctx) != nil {
-		body = normalizeCodexParallelToolCalls(body, opts.Headers)
-	} else {
-		body = normalizeCodexWebsocketParallelToolCalls(body, opts.Headers)
-	}
+	body = codexHTTPBridge(ctx).normalizeParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	multiAgentV2Conflict := false
 	if codexHTTPBridge(ctx) == nil {
@@ -919,6 +901,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if errReplay != nil {
 		return nil, errReplay
 	}
+	body = sanitizeOpenAIResponsesReasoningEncryptedContentWithCompatModelAndBaseURL(ctx, "codex websockets executor", body, isCompat, targetModel, baseURL)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -940,11 +923,12 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	if useSIWC {
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
+	body = codexHTTPPayload(ctx, body)
 	body = finalizePayload(body)
-	if codexHTTPBridge(ctx) != nil {
-		// Payload rules cannot add ancestry to an independent pooled request.
-		body = codexHTTPPayload(ctx, body)
-	} else {
+	if errPayload := codexHTTPBridge(ctx).validatePayload(body); errPayload != nil {
+		return nil, errPayload
+	}
+	if codexHTTPBridge(ctx) == nil {
 		wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 		applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 		applyModelHeaderOverrides(wsHeaders, baseModel)

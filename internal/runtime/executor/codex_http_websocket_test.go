@@ -593,7 +593,7 @@ func TestCodexHTTPWebsocketProviderQuotaRejectionIsDefinitive(t *testing.T) {
 func TestCodexHTTPWebsocketPayloadRulesAndProviderIdentity(t *testing.T) {
 	upstream := newCodexHTTPTestUpstream(t, nil, 0)
 	exec := codexHTTPTestExecutor(t)
-	exec.httpExec.cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "gpt-*", Protocol: "codex"}}, Params: map[string]any{"service_tier": "priority", "previous_response_id": "rule-ancestry", "generate": false}}}
+	exec.httpExec.cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "gpt-*", Protocol: "codex"}}, Params: map[string]any{"service_tier": "priority"}}}
 	auth := codexHTTPTestAuth(t, upstream)
 	auth.Attributes["header:X-Test-Session"] = "$CPA-SESSION-ID"
 	req, opts := codexHTTPTestRequest(sdktranslator.FormatOpenAIResponse)
@@ -616,6 +616,103 @@ func TestCodexHTTPWebsocketPayloadRulesAndProviderIdentity(t *testing.T) {
 	}
 	if upstream.upgrades.Load() != 1 {
 		t.Fatal("stable provider session did not reuse its private socket")
+	}
+}
+
+func TestCodexHTTPWebsocketFinishCannotClearNextOwnerCancellation(t *testing.T) {
+	pool := helps.NewCodexHTTPWebsocketPool()
+	defer pool.Close()
+	key := helps.CodexHTTPWebsocketKey{Credential: t.Name()}
+	lease, ok := pool.Acquire(context.Background(), key)
+	if !ok {
+		t.Fatal("first lease unavailable")
+	}
+	resource := newCodexHTTPWebsocketResource()
+	if !lease.SetResource(resource) {
+		t.Fatal("resource rejected")
+	}
+	bridge := &codexHTTPWebsocketBridge{lease: lease, resource: resource, clean: true}
+	_ = bridge.finish(nil)
+	nextLease, ok := pool.Acquire(context.Background(), key)
+	if !ok || nextLease.Resource() != resource {
+		t.Fatal("healthy resource was not reused")
+	}
+	next := &codexHTTPWebsocketBridge{lease: nextLease, resource: resource}
+	ctx := next.requestContext(context.Background())
+	_ = bridge.finish(nil)
+	pool.Close()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatal("previous owner cleared the next owner's cancellation")
+	}
+	_ = next.finish(nil)
+}
+
+func TestCodexHTTPWebsocketFinishJoinsRunningCancellation(t *testing.T) {
+	pool := helps.NewCodexHTTPWebsocketPool()
+	defer pool.Close()
+	lease, ok := pool.Acquire(context.Background(), helps.CodexHTTPWebsocketKey{Credential: t.Name()})
+	if !ok {
+		t.Fatal("lease unavailable")
+	}
+	resource := newCodexHTTPWebsocketResource()
+	readerDone := make(chan struct{})
+	resource.readerDone = readerDone
+	entered := make(chan struct{})
+	resource.requestCancel = func() { close(entered) }
+	if !lease.SetResource(resource) {
+		t.Fatal("resource rejected")
+	}
+	bridge := &codexHTTPWebsocketBridge{lease: lease, resource: resource, sent: true, clean: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	bridge.armCancellation(ctx)
+	cancel()
+	<-entered
+	finished := make(chan error, 1)
+	go func() { finished <- bridge.finish(context.Canceled) }()
+	close(readerDone)
+	if err := <-finished; !cliproxyexecutor.IsExecutionUncertain(err) {
+		t.Fatalf("cancellation after send must remain uncertain: %v", err)
+	}
+	select {
+	case <-bridge.cancelDone:
+	default:
+		t.Fatal("finish returned before its cancellation callback")
+	}
+}
+
+func TestCodexHTTPWebsocketRejectsConfiguredIndependentRequestViolations(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, field := range []string{"previous_response_id", "generate", "stream", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+			t.Run(fmt.Sprintf("%s/stream=%t", field, streaming), func(t *testing.T) {
+				upstream := newCodexHTTPTestUpstream(t, nil, 0)
+				exec := codexHTTPTestExecutor(t)
+				value := any("configured-value")
+				if field == "generate" || field == "stream" {
+					value = false
+				}
+				exec.httpExec.cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "gpt-*", Protocol: "codex"}}, Params: map[string]any{field: value}}}
+				auth := codexHTTPTestAuth(t, upstream)
+				req, opts := codexHTTPTestRequest(sdktranslator.FormatOpenAIResponse)
+				var err error
+				if streaming {
+					var result *cliproxyexecutor.StreamResult
+					result, err = exec.ExecuteStream(context.Background(), auth, req, opts)
+					if result != nil {
+						for range result.Chunks {
+						}
+					}
+				} else {
+					_, err = exec.Execute(context.Background(), auth, req, opts)
+				}
+				var status interface{ StatusCode() int }
+				if !errors.As(err, &status) || status.StatusCode() != http.StatusBadRequest {
+					t.Fatalf("configured %s must fail before send, got %v", field, err)
+				}
+				if upstream.upgrades.Load() != 0 || upstream.posts.Load() != 0 || upstream.creates.Load() != 0 {
+					t.Fatal("incompatible configured payload reached upstream")
+				}
+			})
+		}
 	}
 }
 

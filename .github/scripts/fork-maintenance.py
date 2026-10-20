@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -59,6 +60,50 @@ def require_forward_baseline(upstream_tag, previous_tag):
     raise ValueError('upstream release baseline regressed; manual review is required')
 
 
+def merge_upstream(fork_sha, upstream_sha):
+  command = ['git', 'merge', '--no-commit', '--no-ff', upstream_sha]
+  try:
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=True)
+  except subprocess.CalledProcessError as error:
+    details = [f'Fork source: {fork_sha}', f'Upstream source: {upstream_sha}',
+      f'Command: {shlex.join(command)}', f'Git exit status {error.returncode}',
+      f'Git stdout:\n{error.stdout or ""}', f'Git stderr:\n{error.stderr or ""}']
+    try:
+      output = subprocess.check_output(
+        ['git', 'diff', '--name-only', '--diff-filter=U', '-z'], cwd=ROOT)
+      paths = [os.fsdecode(path) for path in output.split(b'\0') if path]
+    except (OSError, subprocess.CalledProcessError) as inspection_error:
+      paths = []
+      details.append(f'Conflict inspection failed: {inspection_error}')
+    if paths:
+      details.insert(0, 'Merge stopped: source conflicts require manual integration.')
+      details.extend(['Conflicting paths:', *(f'  {json.dumps(path)}' for path in paths),
+        'In a clean local checkout, fetch both sources and create an integration branch:',
+        f'git fetch https://github.com/{REPOSITORY}.git main --tags',
+        f'git fetch https://github.com/{UPSTREAM}.git main --tags',
+        f'git switch -c fix-fork-sync-{upstream_sha[:12]} {fork_sha}',
+        shlex.join(command),
+        'Resolve the listed files without discarding reviewed fork behavior.',
+        'git diff --check', f'git add -- {shlex.join(paths)}',
+        'git commit -m "fork: sync upstream main" '
+          '-m "Co-Authored-By: Claude Code <noreply@anthropic.com>"',
+        './repo.sh setup', './repo.sh check-pr', './repo.sh test', './repo.sh build',
+        'After every check passes, review and push without force:',
+        f'git push https://github.com/{REPOSITORY}.git HEAD:refs/heads/main',
+        f'gh workflow run fork-maintenance --repo {REPOSITORY} --ref main'])
+    else:
+      details.insert(0, 'Merge stopped: git failed without confirmed source conflicts.')
+      details.extend(['Inspect the Git cause before retrying. Do not apply conflict recovery blindly.',
+        'git status --short', 'git diff --name-only --diff-filter=U',
+        'git rev-parse -q --verify MERGE_HEAD'])
+    details.append('Preparation stopped before candidate creation, tests, tagging, push, or release publication.')
+    raise ValueError('\n'.join(details)) from error
+  if result.stdout:
+    print(result.stdout, end='')
+  if result.stderr:
+    print(result.stderr, end='', file=sys.stderr)
+
+
 def prepare():
   if os.environ.get('GITHUB_REPOSITORY') != REPOSITORY:
     raise ValueError('maintenance only runs in akalsi-org/CLIProxyAPI GitHub Actions')
@@ -68,7 +113,7 @@ def prepare():
   original_sha = run('git', 'rev-parse', 'HEAD')
   run('git', 'fetch', f'https://github.com/{UPSTREAM}.git', 'main', '--tags')
   upstream_sha = run('git', 'rev-parse', 'FETCH_HEAD')
-  subprocess.run(['git', 'merge', '--no-commit', '--no-ff', upstream_sha], cwd=ROOT, check=True)
+  merge_upstream(original_sha, upstream_sha)
   merge_head = subprocess.run(['git', 'rev-parse', '-q', '--verify', 'MERGE_HEAD'],
     cwd=ROOT, capture_output=True)
   if merge_head.returncode == 0:

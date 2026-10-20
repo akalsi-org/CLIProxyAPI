@@ -1,8 +1,11 @@
 """Deterministic fork release selection and publication failure checks."""
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -54,7 +57,7 @@ class MaintenanceTests(unittest.TestCase):
         return ''
       return upstream if argv[-1] == 'FETCH_HEAD' else source
     def subprocess_run(argv, **kwargs):
-      return SimpleNamespace(returncode=1 if 'MERGE_HEAD' in argv else 0)
+      return SimpleNamespace(returncode=1 if 'MERGE_HEAD' in argv else 0, stdout='', stderr='')
     with patch.dict(os.environ, {'GITHUB_REPOSITORY': maintenance.REPOSITORY}), \
         patch.object(maintenance, 'run', side_effect=run), \
         patch.object(maintenance.subprocess, 'run', side_effect=subprocess_run), \
@@ -74,7 +77,7 @@ class MaintenanceTests(unittest.TestCase):
       return 'a' * 40
     with patch.dict(os.environ, {'GITHUB_REPOSITORY': maintenance.REPOSITORY}), \
         patch.object(maintenance, 'run', side_effect=run), \
-        patch.object(maintenance.subprocess, 'run', return_value=SimpleNamespace(returncode=1)), \
+        patch.object(maintenance.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='', stderr='')), \
         patch.object(maintenance, 'api') as api:
       with self.assertRaisesRegex(ValueError, 'workflow files'):
         maintenance.prepare()
@@ -89,10 +92,36 @@ class MaintenanceTests(unittest.TestCase):
         patch.object(maintenance, 'run', side_effect=run), \
         patch.object(maintenance, 'api') as api, \
         patch.object(maintenance.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['git', 'merge'])):
-      with self.assertRaises(subprocess.CalledProcessError):
+      with self.assertRaisesRegex(ValueError, 'Merge stopped') as raised:
         maintenance.prepare()
+      self.assertIsInstance(raised.exception.__cause__, subprocess.CalledProcessError)
       api.assert_not_called()
     self.assertFalse(any('push' in argv for argv in calls))
+
+  def test_merge_git_failure_without_conflicts_preserves_cause(self):
+    error = subprocess.CalledProcessError(128, ['git', 'merge'],
+      output='merge detail\n', stderr='fatal: missing object\n')
+    with patch.object(maintenance.subprocess, 'run', side_effect=error), \
+        patch.object(maintenance, 'run', return_value=''):
+      with self.assertRaises(ValueError) as raised:
+        maintenance.merge_upstream('f' * 40, 'a' * 40)
+    self.assertIs(raised.exception.__cause__, error)
+    diagnostic = str(raised.exception)
+    for expected in ('without confirmed source conflicts', 'f' * 40, 'a' * 40,
+        'exit status 128', 'merge detail\n', 'fatal: missing object\n', 'git status --short'):
+      with self.subTest(expected=expected):
+        self.assertIn(expected, diagnostic)
+    self.assertNotIn('git add --', diagnostic)
+    self.assertNotIn('git push', diagnostic)
+
+  def test_pristine_guard_stops_before_fetch_or_merge(self):
+    with patch.dict(os.environ, {'GITHUB_REPOSITORY': maintenance.REPOSITORY}), \
+        patch.object(maintenance, 'run', return_value='?? unreviewed.txt') as run, \
+        patch.object(maintenance.subprocess, 'run') as merge:
+      with self.assertRaisesRegex(ValueError, 'tracked or untracked changes'):
+        maintenance.prepare()
+    run.assert_called_once_with('git', 'status', '--porcelain')
+    merge.assert_not_called()
 
   def test_publish_rejects_changed_source_before_tagging(self):
     with tempfile.TemporaryDirectory() as directory:
@@ -159,6 +188,145 @@ class MaintenanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
           action()
       run.assert_not_called()
+
+
+class GitIntegrationTests(unittest.TestCase):
+  def setUp(self):
+    self.directory = tempfile.TemporaryDirectory()
+    self.addCleanup(self.directory.cleanup)
+    self.root = Path(self.directory.name)
+    self.state = self.root / '.local/candidate.json'
+    self.output = self.root / '.local/output'
+    self.environment = patch.dict(os.environ, {
+      'GITHUB_REPOSITORY': maintenance.REPOSITORY, 'GITHUB_OUTPUT': str(self.output),
+      'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+      'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
+      'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid',
+      'GIT_AUTHOR_DATE': '2026-01-01T00:00:00Z', 'GIT_COMMITTER_DATE': '2026-01-01T00:00:00Z',
+    })
+    self.environment.start()
+    self.addCleanup(self.environment.stop)
+    self.git('init', '--initial-branch=main')
+    self.git('config', 'commit.gpgsign', 'false')
+    self.git('config', 'core.hooksPath', os.devnull)
+    (self.root / '.git/info/exclude').write_text('.local/\n')
+    self.state.parent.mkdir()
+    self.output.write_text('')
+    (self.root / 'bridge.txt').write_text('base\n')
+    self.git('add', '.')
+    self.git('commit', '-m', 'base')
+    self.git('branch', 'upstream')
+    self.git('remote', 'add', 'origin', str(self.root))
+
+  def git(self, *argv):
+    return subprocess.check_output(['git', *argv], cwd=self.root, text=True,
+      stderr=subprocess.STDOUT).strip()
+
+  def diverge(self, conflict, bridge_path='bridge.txt'):
+    if bridge_path != 'bridge.txt':
+      self.git('mv', '--', 'bridge.txt', bridge_path)
+      self.git('commit', '-m', 'rename bridge fixture')
+      self.git('branch', '-f', 'upstream', 'HEAD')
+    (self.root / bridge_path).write_text('fork\n')
+    self.git('commit', '-am', 'fork bridge')
+    fork_sha = self.git('rev-parse', 'HEAD')
+    self.git('switch', 'upstream')
+    target = bridge_path if conflict else 'upstream.txt'
+    (self.root / target).write_text('upstream\n')
+    self.git('add', '.')
+    self.git('commit', '-m', 'upstream change')
+    upstream_sha = self.git('rev-parse', 'HEAD')
+    self.git('tag', 'v8.0.13')
+    self.git('switch', 'main')
+    return fork_sha, upstream_sha
+
+  def prepare(self):
+    self.calls = []
+    original_run = maintenance.run
+    def local_run(*argv):
+      self.calls.append(argv)
+      if argv[:3] == ('git', 'fetch', 'origin'):
+        return original_run('git', 'fetch', str(self.root), 'main', '--tags')
+      if argv[:3] == ('git', 'fetch', f'https://github.com/{maintenance.UPSTREAM}.git'):
+        return original_run('git', 'fetch', str(self.root), 'upstream', '--tags')
+      return original_run(*argv)
+    self.stderr = io.StringIO()
+    with patch.object(maintenance, 'ROOT', self.root), \
+        patch.object(maintenance, 'STATE', self.state), \
+        patch.object(maintenance, 'run', side_effect=local_run), \
+        patch.object(maintenance, 'api', return_value={
+          'draft': False, 'prerelease': False, 'tag_name': 'v8.0.13'}) as api, \
+        patch.object(maintenance, 'release_history', return_value=[]), \
+        patch.object(maintenance.sys, 'argv', ['fork-maintenance.py', 'prepare']), \
+        redirect_stderr(self.stderr):
+      result = maintenance.main()
+    self.api_calls = api.call_count
+    return result
+
+  def test_real_conflict_reports_sources_paths_and_recovery_without_publication(self):
+    fork_sha, upstream_sha = self.diverge(conflict=True)
+    self.assertEqual(self.prepare(), 1)
+    diagnostic = self.stderr.getvalue()
+    for expected in ('source conflicts', fork_sha, upstream_sha, 'bridge.txt',
+        'git switch -c', 'git merge --no-commit --no-ff', 'git add -- bridge.txt',
+        './repo.sh check-pr', './repo.sh test', './repo.sh build',
+        'gh workflow run fork-maintenance', 'CONFLICT (content)', 'exit status 1'):
+      with self.subTest(expected=expected):
+        self.assertIn(expected, diagnostic)
+    self.assertEqual(self.git('diff', '--name-only', '--diff-filter=U'), 'bridge.txt')
+    self.assertEqual(self.git('rev-parse', 'HEAD'), fork_sha)
+    self.assertEqual(self.git('rev-parse', 'MERGE_HEAD'), upstream_sha)
+    self.assertFalse(self.state.exists())
+    self.assertEqual(self.output.read_text(), '')
+    self.assertEqual(self.api_calls, 0)
+    self.assertFalse(any(argv[0] == 'gh' or argv[1] in ('push', 'tag') for argv in self.calls))
+    self.assertEqual(self.git('tag', '--list'), 'v8.0.13')
+
+  def test_real_conflict_preserves_whitespace_and_shell_special_characters(self):
+    bridge_path = ' bridge \' "$value";[x]*.txt \t\r\n'
+    self.diverge(conflict=True, bridge_path=bridge_path)
+    self.assertEqual(self.prepare(), 1)
+    diagnostic = self.stderr.getvalue()
+    add = 'git add -- ' + diagnostic.split('\ngit add -- ', 1)[1].split('\ngit commit', 1)[0]
+    self.assertEqual(shlex.split(add), ['git', 'add', '--', bridge_path])
+    self.assertIn(f'  {json.dumps(bridge_path)}\n', diagnostic)
+    (self.root / bridge_path).write_text('resolved\n')
+    subprocess.check_call(shlex.split(add), cwd=self.root)
+    self.assertEqual(self.git('diff', '--name-only', '--diff-filter=U'), '')
+
+  def test_recovery_targets_the_fork_without_assuming_remote_names(self):
+    fork_url = f'https://github.com/{maintenance.REPOSITORY}.git'
+    upstream_url = f'https://github.com/{maintenance.UPSTREAM}.git'
+    self.git('remote', 'set-url', 'origin', upstream_url)
+    self.git('remote', 'add', 'fork', fork_url)
+    self.assertEqual(self.git('remote', 'get-url', 'origin'), upstream_url)
+    self.assertEqual(self.git('remote', 'get-url', 'fork'), fork_url)
+    self.diverge(conflict=True)
+    self.assertEqual(self.prepare(), 1)
+    diagnostic = self.stderr.getvalue()
+    self.assertIn(f'git fetch {fork_url} main --tags', diagnostic)
+    self.assertNotIn('git fetch origin', diagnostic)
+    pushes = [shlex.split(line) for line in diagnostic.splitlines() if line.startswith('git push ')]
+    self.assertEqual(pushes, [['git', 'push', fork_url, 'HEAD:refs/heads/main']])
+    self.assertFalse(any(maintenance.UPSTREAM in argv[2] or argv[2] in ('origin', 'upstream')
+      for argv in pushes))
+
+  def test_real_success_keeps_both_parents_and_provenance_compatible(self):
+    fork_sha, upstream_sha = self.diverge(conflict=False)
+    self.assertEqual(self.prepare(), 0, self.stderr.getvalue())
+    candidate = json.loads(self.state.read_text())
+    source = self.git('rev-parse', 'HEAD')
+    self.assertEqual(self.git('show', '-s', '--format=%P', 'HEAD'), f'{fork_sha} {upstream_sha}')
+    self.assertEqual(candidate, {'schema_version': 1, 'version': '8.0.13-akalsi.1',
+      'source_sha': source, 'upstream_main_sha': upstream_sha,
+      'upstream_release_tag': 'v8.0.13', 'upstream_release_sha': upstream_sha,
+      'patch_sha': maintenance.PATCH_SHA, 'go_version': maintenance.GO_VERSION, 'snapshot': True})
+    self.assertEqual((self.root / 'bridge.txt').read_text(), 'fork\n')
+    self.assertEqual((self.root / 'upstream.txt').read_text(), 'upstream\n')
+    self.assertEqual(self.git('status', '--porcelain'), '')
+    self.assertIn('changed=true\n', self.output.read_text())
+    self.assertEqual(self.api_calls, 1)
+    self.assertFalse(any(argv[0] == 'gh' or argv[1] == 'push' for argv in self.calls))
 
 
 if __name__ == '__main__':

@@ -50,6 +50,16 @@ Published tags and assets are never overwritten.
 Interrupted publication can leave an orphan tag or draft; a subsequent run reserves a new revision.
 Inspect the failed run before deleting anything.
 
+## HTTP WebSocket bridge compatibility
+
+`upstream.codex.http-websockets` enables pooled upstream WebSockets for eligible HTTP requests with WebSocket-enabled credentials.
+Bridge requests use payload rules for the `codex` protocol.
+Final payload rules must not add `previous_response_id`, `generate`, `prompt_cache_retention`, `safety_identifier`, or `stream_options`.
+The final `stream` value must remain `true`; rules must not remove it or set another value.
+Incompatible configured payloads return HTTP 400 before pool acquisition or any upstream send.
+The bridge no longer silently removes or overwrites these configured values.
+Ordinary WebSocket requests without the HTTP bridge retain their existing behavior.
+
 ## Local verification
 
 ```bash
@@ -65,8 +75,64 @@ No arguments enters a shell without user startup files.
 
 ## Recovery
 
-If synchronization conflicts, resolve it on an integration branch and run the same checks.
-Do not force-push main or discard the reviewed patch silently.
+If synchronization conflicts, maintenance reports both source SHAs, conflicting paths, Git output, and recovery commands.
+Preparation stops before candidate creation, tests, tagging, push, or release publication.
+The failed checkout retains its conflict state for inspection.
+A Git failure without unmerged paths receives separate diagnostics, not conflict-resolution instructions.
+Inspect its cause before retrying.
+
+In a clean local checkout, use the exact source SHAs from the failed run.
+The commands below use shell variables for those reported values.
+Explicit URLs avoid remote-name assumptions in Actions and local checkouts.
+Actions uses the fork as `origin`; local checkouts can use upstream as `origin` and the fork as `fork`.
+
+```bash
+FORK_SHA='<reported-fork-source-sha>'
+UPSTREAM_SHA='<reported-upstream-source-sha>'
+git fetch https://github.com/akalsi-org/CLIProxyAPI.git main --tags
+git fetch https://github.com/router-for-me/CLIProxyAPI.git main --tags
+git switch -c "fix-fork-sync-${UPSTREAM_SHA:0:12}" "$FORK_SHA"
+git merge --no-commit --no-ff "$UPSTREAM_SHA"
+git diff --name-only --diff-filter=U
+```
+
+Resolve each reported path and review both sides' behavior.
+Use `git add -- <resolved-path>` for each resolved path.
+Do not stage unrelated files.
+Then commit the integration and run every required check.
+
+```bash
+git diff --check
+git commit -m "fork: sync upstream main" \
+  -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
+./repo.sh setup
+./repo.sh check-pr
+./repo.sh test
+./repo.sh build
+```
+
+If every check passes, review the integration before publication.
+With authorized credentials, push the integration and dispatch maintenance.
+
+```bash
+git push https://github.com/akalsi-org/CLIProxyAPI.git HEAD:refs/heads/main
+gh workflow run fork-maintenance --repo akalsi-org/CLIProxyAPI --ref main
+```
+
+If main advanced, stop and integrate the new commits before repeating verification.
+If workflow files changed, use authorized SSH access or a workflows-authorized token.
+Do not force-push main or discard reviewed fork behavior silently.
+
+### Limit repeated bridge conflicts
+
+Keep fork-owned bridge policy in small helpers beside upstream-owned request and stream code.
+Keep upstream call-site changes narrow and document each policy difference.
+Before integration, compare upstream changes against those call sites and their policy helpers.
+Test both preserved fork behavior and new upstream behavior with deterministic regressions.
+When upstream implements the same guarantee, remove the redundant fork change after verification.
+These measures reduce overlapping edits; they cannot prevent all conflicts.
+Do not auto-select either side, retry an unchanged conflict, or bypass publication checks.
+
 If branch protection blocks publication, inspect the policy before changing it.
 If the pinned toolchain no longer builds upstream, review and update its version and checksum together.
 After repairs, dispatch `fork-maintenance` on main.
