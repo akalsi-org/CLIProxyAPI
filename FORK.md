@@ -36,7 +36,7 @@ An unchanged tested source and upstream release baseline produce no release.
 A new candidate uses the latest stable upstream version plus `-akalsi.N`.
 For example, `8.0.13-akalsi.1` is a fork snapshot, not an unchanged upstream release.
 
-The Go 1.26.4 archive has a pinned SHA256.
+The Go 1.26.10 archive has a pinned SHA256.
 A pinned manylinux2014 container builds plugin-capable Linux amd64 with a GLIBC 2.17 ceiling.
 Builds use committed catalogs; they do not regenerate catalogs from moving remote sources.
 

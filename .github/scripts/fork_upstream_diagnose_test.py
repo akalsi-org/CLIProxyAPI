@@ -49,7 +49,7 @@ class DiagnoseTests(unittest.TestCase):
     self.go.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, signal, subprocess, sys, time
 if sys.argv[1:] == ['version']:
-  print('go version go1.26.4 linux/amd64')
+  print('go version go1.26.10 linux/amd64')
   sys.exit(0)
 assert pathlib.Path('upstream-marker').read_text() == 'upstream\\n'
 assert '-mod=readonly' in sys.argv and '-count=1' in sys.argv and '-json' in sys.argv
@@ -299,7 +299,7 @@ sys.exit(1 if mode in ('same', 'different-subtest', 'same-subtest') else 0)
     self.go.write_text('''#!/usr/bin/env python3
 import json,sys
 if sys.argv[1:] == ['version']:
-  print('go version go1.26.4 linux/amd64')
+  print('go version go1.26.10 linux/amd64')
 else:
   print(json.dumps(sys.argv[1:]))
 ''')

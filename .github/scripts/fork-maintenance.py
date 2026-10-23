@@ -14,7 +14,7 @@ import sys
 REPOSITORY = 'akalsi-org/CLIProxyAPI'
 UPSTREAM = 'router-for-me/CLIProxyAPI'
 PATCH_SHA = 'c2f8accb748095a31745f4b86025a13199fd4d59'
-GO_VERSION = '1.26.4'
+GO_VERSION = '1.26.10'
 RELEASE_TAG = re.compile(r'v([0-9]+\.[0-9]+\.[0-9]+)$')
 FORK_TAG = re.compile(r'v([0-9]+\.[0-9]+\.[0-9]+)-akalsi\.([1-9][0-9]*)$')
 ROOT = Path(__file__).resolve().parents[2]

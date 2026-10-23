@@ -183,7 +183,7 @@ func TestAntigravityProjectOverridePreparation(t *testing.T) {
 			var calls atomic.Int32
 			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 				calls.Add(1)
-				if req.URL.String() != "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+				if req.URL.String() != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
 					return nil, fmt.Errorf("unexpected acquisition request: %s", req.URL)
 				}
 				return issue6199AntigravityJSONResponse(req, `{"cloudaicompanionProject":"discovered-project"}`), nil
@@ -272,7 +272,7 @@ func TestAntigravityProjectOverridePreservesRefreshAndPersistence(t *testing.T) 
 					case "https://oauth2.googleapis.com/token":
 						tokenCalls.Add(1)
 						return issue6199AntigravityJSONResponse(req, `{"access_token":"refreshed-synthetic-token","expires_in":3600}`), nil
-					case "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
+					case "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
 						creditsCalls.Add(1)
 						return issue6199AntigravityJSONResponse(req, `{"cloudaicompanionProject":"must-not-be-stored","paidTier":{"id":"synthetic-tier","availableCredits":[]}}`), nil
 					default:

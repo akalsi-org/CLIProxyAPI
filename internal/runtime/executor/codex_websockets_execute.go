@@ -33,11 +33,11 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		defer func() { err = bridge.finish(err) }()
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
-	apiKey, baseURL := codexCreds(auth)
-	if errSIWC := ensureCodexSIWCCredentials(auth, apiKey); errSIWC != nil {
+	apiKey, baseURL := codexCredsForRequest(ctx, auth, opts.Headers)
+	if errSIWC := ensureCodexSIWCCredentialsForRequest(ctx, auth, apiKey, opts.Headers); errSIWC != nil {
 		return resp, errSIWC
 	}
-	useSIWC := codexUseSIWC(auth)
+	useSIWC := codexUseSIWCForRequest(ctx, auth, opts.Headers)
 	if baseURL == "" {
 		if useSIWC {
 			baseURL = defaultOpenAISIWCBaseURL
@@ -191,7 +191,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	var errDial error
 	dialCtx := ctx
 	if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth))
+		conn, closer = existingWebsocketSessionConn(sess, authID, wsURL, executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth), useSIWC)
 		if conn == nil {
 			return resp, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
 		}
@@ -200,7 +200,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if bridge != nil {
 			sess, conn, closer, respHS, errDial = e.ensureHTTPBridgeReady(dialCtx, auth, bridge, sess, authID, wsURL, wsHeaders)
 		} else {
-			conn, closer, respHS, errDial = e.ensureUpstreamConn(dialCtx, auth, sess, authID, wsURL, wsHeaders)
+			conn, closer, respHS, errDial = e.ensureUpstreamConnWithSIWC(dialCtx, auth, sess, authID, wsURL, wsHeaders, useSIWC)
 		}
 	}
 	if bridge != nil && errors.Is(errDial, errCodexHTTPWebsocketCapacity) {
@@ -280,7 +280,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			// Retry once with a fresh websocket connection. This is mainly to handle
 			// upstream closing the socket between sequential requests within the same
 			// execution session.
-			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConn(ctx, auth, sess, authID, wsURL, wsHeaders)
+			connRetry, closerRetry, respHSRetry, errDialRetry := e.ensureUpstreamConnWithSIWC(ctx, auth, sess, authID, wsURL, wsHeaders, useSIWC)
 			if errDialRetry == nil && connRetry != nil {
 				previousConn, previousReadCh := conn, readCh
 				conn = connRetry
