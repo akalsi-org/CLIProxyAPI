@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/redis/go-redis/v9"
 	log "github.com/sirupsen/logrus"
@@ -58,9 +59,38 @@ func (c *Client) rebalanceCommand(ctx context.Context, address string, args ...a
 	}
 	options.ReadTimeout = -1
 	options.WriteTimeout = -1
-	options.Dialer = redis.NewDialer(options)
+	// go-redis checks pool connection health before Close closes them. That check
+	// waits for a blocked read, so cancellation closes the transport first.
+	dial := redis.NewDialer(options)
+	var transportMu sync.Mutex
+	var transports []net.Conn
+	canceled := false
+	options.Dialer = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		conn, errDial := dial(dialCtx, network, addr)
+		if errDial != nil {
+			return nil, errDial
+		}
+		transportMu.Lock()
+		defer transportMu.Unlock()
+		if canceled {
+			_ = conn.Close()
+			return nil, context.Cause(ctx)
+		}
+		transports = append(transports, conn)
+		return conn, nil
+	}
 	command := redis.NewClient(options)
-	stopCancel := context.AfterFunc(ctx, func() { _ = command.Close() })
+	stopCancel := context.AfterFunc(ctx, func() {
+		transportMu.Lock()
+		canceled = true
+		open := transports
+		transports = nil
+		transportMu.Unlock()
+		for _, conn := range open {
+			_ = conn.Close()
+		}
+		_ = command.Close()
+	})
 	defer func() {
 		stopCancel()
 		if errClose := command.Close(); errClose != nil && ctx.Err() == nil {
