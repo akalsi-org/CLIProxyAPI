@@ -1830,7 +1830,18 @@ func corruptGitRepository(t *testing.T, repoDir string) {
 			t.Fatalf("remove packfile %s: %v", filepath.Base(packfile), errRemove)
 		}
 	}
-	if errVerify := verifyRepositoryHead(repo); !isRepositoryCorruptionError(errVerify) {
+	// The store opens a new handle per operation. A handle opened before the
+	// packfile removal can still serve cached pack state in go-git v6 alpha.5.
+	verifyRepo, errReopen := git.PlainOpen(repoDir)
+	if errReopen != nil {
+		t.Fatalf("reopen corrupted repository: %v", errReopen)
+	}
+	defer func() {
+		if errClose := verifyRepo.Close(); errClose != nil {
+			t.Errorf("close reopened corrupted repository: %v", errClose)
+		}
+	}()
+	if errVerify := verifyRepositoryHead(verifyRepo); !isRepositoryCorruptionError(errVerify) {
 		t.Fatalf("verifyRepositoryHead error = %v, want repository corruption", errVerify)
 	}
 }
