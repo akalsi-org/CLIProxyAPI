@@ -75,13 +75,97 @@ class MaintenanceTests(unittest.TestCase):
       if argv[1] == 'diff':
         return '.github/workflows/release.yaml'
       return 'a' * 40
-    with patch.dict(os.environ, {'GITHUB_REPOSITORY': maintenance.REPOSITORY}), \
+    environment = {'GITHUB_REPOSITORY': maintenance.REPOSITORY, 'FORK_MAINTENANCE_TOKEN': ' \n'}
+    with patch.dict(os.environ, environment), \
         patch.object(maintenance, 'run', side_effect=run), \
         patch.object(maintenance.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='', stderr='')), \
         patch.object(maintenance, 'api') as api:
-      with self.assertRaisesRegex(ValueError, 'workflow files'):
+      with self.assertRaisesRegex(ValueError, 'workflow files; set FORK_MAINTENANCE_TOKEN'):
         maintenance.prepare()
       api.assert_not_called()
+
+  def token_prepare(self, workflows, states):
+    """Prepare a workflow-changing candidate with FORK_MAINTENANCE_TOKEN set."""
+    from types import SimpleNamespace
+    directory = tempfile.TemporaryDirectory()
+    self.addCleanup(directory.cleanup)
+    root = Path(directory.name)
+    for path, text in workflows.items():
+      (root / path).parent.mkdir(parents=True, exist_ok=True)
+      (root / path).write_text(text)
+    def run(*argv):
+      if argv[1] in ('status', 'fetch'):
+        return ''
+      if argv[1] == 'diff':
+        return '.github/workflows/release.yaml'
+      if argv[1] == 'ls-files':
+        return '\n'.join(workflows)
+      if argv[1] == 'tag':
+        return 'v8.0.13-akalsi.1'
+      return 'a' * 40
+    def api(path):
+      if path.endswith('/actions/workflows?per_page=100'):
+        return {'workflows': [{'path': path, 'state': state} for path, state in states.items()]}
+      return {'draft': False, 'prerelease': False, 'tag_name': 'v8.0.13'}
+    environment = {'GITHUB_REPOSITORY': maintenance.REPOSITORY, 'FORK_MAINTENANCE_TOKEN': 'synthetic-token'}
+    with patch.dict(os.environ, environment), \
+        patch.object(maintenance, 'ROOT', root), \
+        patch.object(maintenance, 'STATE', root / '.local/fork-candidate.json'), \
+        patch.object(maintenance, 'run', side_effect=run), \
+        patch.object(maintenance.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='', stderr='')), \
+        patch.object(maintenance, 'api', side_effect=api), \
+        patch.object(maintenance, 'release_history', return_value=[]), \
+        patch.object(maintenance, 'write_output') as output, \
+        redirect_stderr(io.StringIO()), patch('sys.stdout', new_callable=io.StringIO):
+      try:
+        maintenance.prepare()
+      finally:
+        self.outputs = [call.args for call in output.call_args_list]
+
+  def test_token_merges_workflow_changes_when_tag_workflows_are_disabled(self):
+    workflows = {
+      '.github/workflows/fork-release.yml': 'on:\n  workflow_dispatch:\n  push:\n',
+      '.github/workflows/release.yaml': 'on:\n  push:\n    tags:\n      - "*"\n',
+      '.github/workflows/pr-test-build.yml': 'on:\n  pull_request:\n',
+    }
+    states = {'.github/workflows/fork-release.yml': 'active', '.github/workflows/release.yaml': 'disabled_manually',
+      '.github/workflows/pr-test-build.yml': 'active'}
+    self.token_prepare(workflows, states)
+    self.assertIn(('changed', 'true'), self.outputs)
+    self.assertIn(('version', '8.0.13-akalsi.2'), self.outputs)
+
+  def test_token_refuses_active_tag_workflow_before_candidate(self):
+    workflows = {'.github/workflows/release.yaml': 'on:\n  push:\n    tags:\n      - "*"\n'}
+    with self.assertRaisesRegex(ValueError, 'active workflow .github/workflows/release.yaml runs on push'):
+      self.token_prepare(workflows, {'.github/workflows/release.yaml': 'active'})
+    self.assertEqual(self.outputs, [])
+
+  def test_token_treats_new_upstream_workflow_as_active(self):
+    workflows = {'.github/workflows/new-release.yml': 'on: [release, pull_request]\n'}
+    with self.assertRaisesRegex(ValueError, 'new-release.yml runs on release'):
+      self.token_prepare(workflows, {})
+    self.assertEqual(self.outputs, [])
+
+  def test_publication_triggers_read_only_the_top_level_on_block(self):
+    cases = {
+      'on: push\n': ['push'],
+      'on: [pull_request, push]  # comment\n': ['push'],
+      '"on":\n  release:\n    types: [published]\n  create:\n': ['create', 'release'],
+      'on:\n  workflow_run:\n    workflows: [x]\n': ['workflow_run'],
+      'on:\n  pull_request_target:\n    branches: [push-x]\njobs:\n  push:\n': [],
+      'on:\n  schedule:\n    - cron: "17 * * * *"\n  workflow_dispatch:\n': [],
+    }
+    for text, expected in cases.items():
+      with self.subTest(text=text):
+        self.assertEqual(maintenance.publication_triggers(text), expected)
+
+  def test_workflow_passes_token_to_prepare_and_publish(self):
+    workflow = (Path(__file__).resolve().parents[1] / 'workflows/fork-release.yml').read_text()
+    self.assertIn('FORK_MAINTENANCE_TOKEN: ${{ secrets.FORK_MAINTENANCE_TOKEN }}', workflow)
+    self.assertIn('GH_TOKEN: ${{ secrets.FORK_MAINTENANCE_TOKEN || github.token }}', workflow)
+    self.assertIn('actions: read', workflow)
+    trigger = workflow.split('\npermissions:', 1)[0]
+    self.assertEqual(maintenance.publication_triggers(trigger), [])
 
   def test_conflict_stops_before_release_or_push(self):
     calls = []

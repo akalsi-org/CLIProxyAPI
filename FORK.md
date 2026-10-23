@@ -27,9 +27,17 @@ The existing hourly workflow remains the only upstream synchronization scheduler
 It runs `./repo.sh test-maintenance` before preparation, without Go setup or network access.
 Overlapping changes still require review; maintenance never applies file allowlists or automatic `ours`/`theirs` selection.
 Merge conflicts, upstream history rewrites, failed tests, and build failures stop publication.
-Upstream workflow-file changes also stop synchronization for manual integration.
 GitHub's repository `GITHUB_TOKEN` cannot push workflow-file changes.
-Integrate those changes locally with authorized SSH access or a workflows-authorized token, then dispatch maintenance again.
+The `FORK_MAINTENANCE_TOKEN` repository secret holds a token with contents and workflows write access.
+If that secret is set, upstream workflow-file changes merge like other changes, and publication pushes with it.
+If that secret is absent, workflow-file changes stop synchronization, and the error says to set it.
+In that case, integrate the changes locally with authorized SSH access, then dispatch maintenance again.
+A token push or tag starts workflows that a `GITHUB_TOKEN` push cannot start.
+Before a token publication, preparation reads each workflow's state through the Actions API.
+It stops if an active workflow other than `fork-maintenance` runs on `push`, `create`, `release`, or `workflow_run`.
+A workflow file that is not yet on main counts as active, because GitHub enables it when the push adds it.
+Disable such a workflow in the fork Actions settings, then dispatch maintenance again.
+`fork-maintenance` runs only on its schedule and manual dispatch, so its own push cannot start it again.
 No upstream workflow changes are silently discarded.
 The workflow runs the Antigravity regressions, all Go tests, and a server compile check.
 An unchanged tested source and upstream release baseline produce no release.

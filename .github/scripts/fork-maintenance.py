@@ -20,6 +20,9 @@ FORK_TAG = re.compile(r'v([0-9]+\.[0-9]+\.[0-9]+)-akalsi\.([1-9][0-9]*)$')
 ROOT = Path(__file__).resolve().parents[2]
 STATE = ROOT / '.local/fork-candidate.json'
 DIST = ROOT / '.local/fork-release'
+MAINTENANCE_WORKFLOW = '.github/workflows/fork-release.yml'
+# Events a token push of main, a tag, or a release can start.
+PUBLICATION_EVENTS = ('push', 'create', 'release', 'workflow_run')
 
 
 def run(*argv):
@@ -58,6 +61,54 @@ def version_numbers(value):
 def require_forward_baseline(upstream_tag, previous_tag):
   if version_numbers(upstream_tag[1:]) < version_numbers(previous_tag[1:]):
     raise ValueError('upstream release baseline regressed; manual review is required')
+
+
+def maintenance_token():
+  return os.environ.get('FORK_MAINTENANCE_TOKEN', '').strip()
+
+
+def publication_triggers(text):
+  """Return the push, tag, and release events in a workflow's top-level on: block."""
+  lines = text.splitlines()
+  for index, line in enumerate(lines):
+    match = re.match(r"""^(?:on|'on'|"on")\s*:\s*(.*)$""", line)
+    if not match:
+      continue
+    inline = match[1].split('#', 1)[0]
+    if inline.strip():
+      block = [inline]
+    else:
+      block = []
+      for nested in lines[index + 1:]:
+        if nested.strip() and not nested[0].isspace():
+          break
+        block.append(nested)
+    found = set()
+    for entry in block:
+      entry = entry.split('#', 1)[0]
+      for event in PUBLICATION_EVENTS:
+        if re.search(rf'(^\s*-?\s*|[\[,]\s*){event}\s*(:|,|\]|$)', entry) or entry.strip() == event:
+          found.add(event)
+    return sorted(found)
+  return []
+
+
+def require_quiet_publication():
+  """A token push starts workflows that GITHUB_TOKEN pushes cannot start."""
+  states = {workflow['path']: workflow['state'] for workflow in
+    api(f'repos/{REPOSITORY}/actions/workflows?per_page=100')['workflows']}
+  paths = run('git', 'ls-files', '--', '.github/workflows').splitlines()
+  for path in paths:
+    if path == MAINTENANCE_WORKFLOW:
+      continue
+    # GitHub enables a new workflow file when the push adds it.
+    if states.get(path, 'active') != 'active':
+      continue
+    events = publication_triggers((ROOT / path).read_text())
+    if events:
+      raise ValueError(f'active workflow {path} runs on {", ".join(events)}; '
+        'a FORK_MAINTENANCE_TOKEN push would start it. '
+        'Disable it in the fork Actions settings, then dispatch maintenance again')
 
 
 def merge_upstream(fork_sha, upstream_sha):
@@ -120,8 +171,11 @@ def prepare():
     run('git', 'commit', '-m', 'fork: sync upstream main',
       '-m', 'Co-Authored-By: Claude Code <noreply@anthropic.com>')
   workflow_changes = run('git', 'diff', '--name-only', original_sha, 'HEAD', '--', '.github/workflows')
+  if workflow_changes and not maintenance_token():
+    raise ValueError('upstream changes workflow files; set FORK_MAINTENANCE_TOKEN '
+      'with contents and workflows write access, or integrate them manually')
   if workflow_changes:
-    raise ValueError('upstream changes workflow files; integrate them manually with a workflows-authorized token')
+    print('Upstream workflow changes merge with FORK_MAINTENANCE_TOKEN:\n' + workflow_changes)
   release = stable_release(api(f'repos/{UPSTREAM}/releases/latest'))
   upstream_tag = release['tag_name']
   upstream_release_sha = run('git', 'rev-parse', f'{upstream_tag}^{{commit}}')
@@ -147,6 +201,8 @@ def prepare():
     break
   tags = run('git', 'tag', '--list').splitlines()
   tags.extend(release['tag_name'] for release in releases)
+  if maintenance_token():
+    require_quiet_publication()
   version = next_version(upstream_tag, tags)
   candidate = {'schema_version': 1, 'version': version, 'source_sha': source_sha,
     'upstream_main_sha': upstream_sha, 'upstream_release_tag': upstream_tag,
