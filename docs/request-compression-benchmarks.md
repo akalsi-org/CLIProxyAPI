@@ -55,6 +55,35 @@ The transport closes the transmitted body and returns an empty successful respon
 Tests require zero attachment allocations for small bodies and unsupported endpoints.
 Compression remains below usage tracking, so rejected attempts do not determine successful-response token timing.
 
+## Codex WebSocket live probe
+
+This live probe ran on 2026-10-24 against `wss://chatgpt.com/backend-api/codex/responses`.
+It used `gorilla/websocket` v1.5.3, Go TLS, a 32 KiB write buffer, and one Codex credential.
+The payload was a `response.create` message with 100 KiB of fork source and documentation.
+
+| Mode | Plain bytes | TLS bytes sent | Result |
+| --- | ---: | ---: | --- |
+| Uncompressed, earlier 25 KB filler fixture | 25,283 | 25,515 | Completed |
+| Deflate, realistic payload, first message | 111,703 | 35,180 | Completed |
+| Deflate, realistic payload, second message on the same connection | 111,703 | 35,114 | Completed |
+
+The server negotiated `permessage-deflate; server_no_context_takeover; client_no_context_takeover`.
+The realistic ratio is about 3.2 times.
+The probe contains four requests and does not measure production latency.
+
+A local benchmark used a synthetic 117,734-byte payload and the 32 KiB bridge write buffer.
+Its loopback round trip includes server inflation and JSON validation.
+
+| Mode | Frame bytes | Round-trip time range |
+| --- | ---: | ---: |
+| Uncompressed | 117,766 | 1.114–1.132 ms |
+| Deflate, gorilla default level | 2,512 | 1.341–1.377 ms |
+
+The synthetic fixture repeats, so its size ratio is not realistic.
+Compression added about 0.23 ms to this local round trip.
+That figure is not isolated write CPU or production latency.
+Full output is in `.local/fork-diagnostics/ws-compression/benchmark.log`.
+
 ## Existing identity decoder
 
 The identity benchmark reuses a constructed request and measures reader reset plus decoding.

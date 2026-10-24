@@ -92,7 +92,7 @@ The proxy compresses finalized upstream JSON only at these verified HTTPS endpoi
 
 Compression starts at 32 KiB and must save both 1 KiB and 5% of the original body.
 Small bodies, existing content encodings, custom gateways, and other endpoints retain their existing behavior.
-Token-count, compact, and WebSocket requests do not gain upstream request compression.
+Token-count, compact, and HTTP-to-WebSocket bridge requests do not gain HTTP request compression.
 OpenAI-compatible API-key endpoints remain uncompressed because their request-encoding support is not established here.
 
 Compression follows payload rules and never changes JSON semantics or prompt-cache prefixes.
@@ -102,6 +102,19 @@ Other errors, transport failures, and successful responses never trigger this co
 Cancellation stops fallback; the helper never retries a consumed response stream.
 There is no capability cache, background probe, or new configuration flag.
 Existing response decompression and SSE streaming remain unchanged.
+
+### Codex WebSocket compression
+
+Codex WebSocket connections negotiate `permessage-deflate`, as upstream does.
+Upstream disables outbound compression after negotiation because some upstreams reject compressed client frames.
+The fork enables outbound compression only for `wss://chatgpt.com` Codex responses endpoints.
+Every other WebSocket host keeps upstream's uncompressed outbound frames.
+If the server does not negotiate the extension, outbound frames stay uncompressed.
+This covers native Codex WebSockets and the HTTP-to-WebSocket bridge.
+
+A 2026-10-24 live probe used the proxy's WebSocket library and TLS stack against chatgpt.com.
+A 111,703-byte request used about 35,150 TLS bytes, and two compressed messages on one connection completed.
+That probe does not establish production latency or behavior on other hosts.
 
 Fork-owned codec and fallback policy lives under `internal/runtime/executor/helps/`.
 Provider executors attach the wrapper before usage tracking; compression and its fallback policy stay in the helper.

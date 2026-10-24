@@ -40,9 +40,9 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 	}
 	closer := newWebsocketConnectionCloser(conn)
 	if conn != nil {
-		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
-		// Negotiating permessage-deflate is fine; we just don't compress outbound messages.
-		conn.EnableWriteCompression(false)
+		// Some upstreams/Go versions have gorilla/websocket flate tail validation issues.
+		// The fork compresses outbound frames only for endpoints accepted by helps.CodexWebsocketWriteCompression.
+		conn.EnableWriteCompression(helps.CodexWebsocketWriteCompression(wsURL))
 	}
 	return conn, closer, resp, err
 }

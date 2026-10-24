@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,19 @@ import (
 )
 
 const requestCompressionThreshold = 32 << 10
+
+// CodexWebsocketWriteCompression permits outbound deflate only on verified first-party endpoints.
+// Other upstreams retain their existing flate-tail compatibility precaution.
+func CodexWebsocketWriteCompression(wsURL string) bool {
+	endpoint, err := url.Parse(wsURL)
+	if err != nil || endpoint.Scheme != "wss" || endpoint.User != nil || endpoint.Opaque != "" || endpoint.RawPath != "" || endpoint.Fragment != "" {
+		return false
+	}
+	if !strings.EqualFold(endpoint.Host, "chatgpt.com") && !strings.EqualFold(endpoint.Host, "chatgpt.com:443") {
+		return false
+	}
+	return endpoint.Path == "/backend-api/codex/responses" || endpoint.Path == "/backend-api/codex/v1/responses"
+}
 
 var requestGzipPool = sync.Pool{New: func() any {
 	writer, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
