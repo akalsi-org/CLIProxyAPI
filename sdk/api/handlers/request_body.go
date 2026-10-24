@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,8 +60,14 @@ func decodeRequestBody(raw []byte, encoding string, maxBytes int64) ([]byte, err
 		switch enc {
 		case "", "identity":
 			continue
-		case "zstd":
-			decoded, err := decodeZstdRequestBody(body, maxBytes)
+		case "gzip", "zstd":
+			var decoded []byte
+			var err error
+			if enc == "gzip" {
+				decoded, err = decodeGzipRequestBody(body, maxBytes)
+			} else {
+				decoded, err = decodeZstdRequestBody(body, maxBytes)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -79,16 +86,29 @@ func decodeZstdRequestBody(raw []byte, maxBytes int64) ([]byte, error) {
 	}
 	defer decoder.Close()
 
-	var reader io.Reader = decoder
+	return readDecodedRequestBody(decoder, "zstd", maxBytes)
+}
+
+func decodeGzipRequestBody(raw []byte, maxBytes int64) ([]byte, error) {
+	decoder, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gzip request decoder: %w", err)
+	}
+	defer func() { _ = decoder.Close() }()
+
+	return readDecodedRequestBody(decoder, "gzip", maxBytes)
+}
+
+func readDecodedRequestBody(reader io.Reader, encoding string, maxBytes int64) ([]byte, error) {
 	if maxBytes > 0 && maxBytes < math.MaxInt64 {
-		reader = io.LimitReader(decoder, maxBytes+1)
+		reader = io.LimitReader(reader, maxBytes+1)
 	}
 	decoded, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode zstd request body: %w", err)
-	}
 	if maxBytes > 0 && int64(len(decoded)) > maxBytes {
 		return nil, &http.MaxBytesError{Limit: maxBytes}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode %s request body: %w", encoding, err)
 	}
 	return decoded, nil
 }

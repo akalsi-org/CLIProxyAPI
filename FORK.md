@@ -72,6 +72,48 @@ Incompatible configured payloads return HTTP 400 before pool acquisition or any 
 The bridge no longer silently removes or overwrites these configured values.
 Ordinary WebSocket requests without the HTTP bridge retain their existing behavior.
 
+## HTTP request compression
+
+Claude and OpenAI HTTP handlers accept plain JSON, gzip, and zstd request bodies.
+The configured request limit applies to encoded bodies and each decoded layer.
+Malformed compressed bodies return HTTP 400; bodies above the configured limit return HTTP 413.
+Existing plain JSON clients remain compatible.
+Encoded-byte limits still belong to server middleware; standalone SDK users must enforce equivalent limits.
+Decoded-byte limits do not change the existing zstd decoder window settings.
+Request logging remains unchanged; stored gzip request bodies retain their compressed wire representation.
+
+The proxy compresses finalized upstream JSON only at these verified HTTPS endpoints:
+
+| Endpoint | Request encoding |
+| --- | --- |
+| `api.anthropic.com/v1/messages` | gzip, fastest level |
+| `chatgpt.com/backend-api/codex/responses` | zstd, fastest level |
+| `chatgpt.com/backend-api/codex/v1/responses` | zstd, fastest level |
+
+Compression starts at 32 KiB and must save both 1 KiB and 5% of the original body.
+Small bodies, existing content encodings, custom gateways, and other endpoints retain their existing behavior.
+Token-count, compact, and WebSocket requests do not gain upstream request compression.
+OpenAI-compatible API-key endpoints remain uncompressed because their request-encoding support is not established here.
+
+Compression follows payload rules and never changes JSON semantics or prompt-cache prefixes.
+Request lengths and replay bodies describe the actual transmitted bytes.
+A compressed request can retry once without compression after an explicit HTTP 415 encoding rejection.
+Other errors, transport failures, and successful responses never trigger this compression fallback.
+Cancellation stops fallback; the helper never retries a consumed response stream.
+There is no capability cache, background probe, or new configuration flag.
+Existing response decompression and SSE streaming remain unchanged.
+
+Fork-owned codec and fallback policy lives under `internal/runtime/executor/helps/`.
+Provider executors attach the wrapper before usage tracking; compression and its fallback policy stay in the helper.
+The wrapper returns only the final response to usage tracking, so rejected attempts do not determine token timing.
+Claude ingress reuses the shared request decoder instead of adding another middleware layer.
+Keep these integration points narrow during upstream merges.
+When upstream supplies equivalent behavior, remove the redundant fork policy after running the compatibility tests.
+
+Compression reduces transport bytes, not model tokens or token charges.
+Local compression benchmarks do not establish production time-to-first-token improvements.
+See [request compression benchmarks](docs/request-compression-benchmarks.md) for fixtures, commands, measurements, and allocation checks.
+
 ## Local verification
 
 ```bash
