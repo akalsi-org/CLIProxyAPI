@@ -134,7 +134,8 @@ func codexWebsocketPayloadSelector(ctx context.Context) string {
 
 // Derive provider headers through the HTTP path before introducing any private pool identity.
 func (e *CodexWebsocketsExecutor) httpBridgeHeaders(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, from sdktranslator.Format, httpURL, baseModel, token string, body []byte) ([]byte, http.Header, error) {
-	httpReq, body, err := e.cacheHelper(ctx, from, httpURL, req, body, opts.Headers)
+	// A nil auth disables HTTP body compression; this request supplies only WebSocket identity headers.
+	httpReq, body, err := e.cacheHelper(ctx, from, httpURL, req, body, nil, opts.Headers)
 	if err != nil {
 		return nil, nil, err
 	}

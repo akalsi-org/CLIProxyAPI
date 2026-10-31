@@ -12,6 +12,7 @@ import (
 	"math"
 	"strings"
 
+	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/tidwall/gjson"
@@ -25,6 +26,13 @@ var (
 // codexThinkingSummaryPartSeparator joins consecutive reasoning summary parts inside
 // the single thinking block that represents one Codex reasoning item.
 const codexThinkingSummaryPartSeparator = "\n\n"
+
+// codexCommentarySignatureMarker is the CLIProxyAPI-internal marker carried in
+// the signature field of the thinking block that relays a Codex commentary
+// message. The shared definition lives in the signature package so every
+// Claude history consumer recognizes and strips it before it can reach an
+// upstream.
+const codexCommentarySignatureMarker = sigcompat.CodexCommentarySignatureMarker
 
 // ConvertCodexResponseToClaudeParams holds parameters for response conversion.
 type ConvertCodexResponseToClaudeParams struct {
@@ -919,24 +927,10 @@ func setClaudeReasoningUsage(out []byte, usage gjson.Result) []byte {
 
 // buildReverseMapFromClaudeOriginalShortToOriginal builds a map[short]original from original Claude request tools.
 func buildReverseMapFromClaudeOriginalShortToOriginal(original []byte) map[string]string {
-	tools := gjson.GetBytes(original, "tools")
 	rev := map[string]string{}
-	if !tools.IsArray() {
-		return rev
-	}
-	var names []string
-	arr := tools.Array()
-	for i := 0; i < len(arr); i++ {
-		n := arr[i].Get("name").String()
-		if n != "" {
-			names = append(names, n)
-		}
-	}
-	if len(names) > 0 {
-		m := buildShortNameMap(names)
-		for orig, short := range m {
-			rev[short] = orig
-		}
+	m := buildReverseMapFromClaudeOriginalToShort(original)
+	for orig, short := range m {
+		rev[short] = orig
 	}
 	return rev
 }
@@ -958,8 +952,9 @@ func startCodexTextBlock(params *ConvertCodexResponseToClaudeParams) []byte {
 }
 
 // finalizeCodexCommentaryBlock closes the thinking block that carries a commentary
-// message. A reasoning item's encrypted_content never belongs to it, so no
-// signature_delta is emitted even if one is pending for a later reasoning item.
+// message. A reasoning item's encrypted_content never belongs to it, so the
+// internal commentary marker is emitted as the block signature instead of any
+// pending reasoning signature.
 func finalizeCodexCommentaryBlock(params *ConvertCodexResponseToClaudeParams) []byte {
 	if !params.CommentaryMessageOpen || !params.ThinkingBlockOpen {
 		return nil
@@ -968,11 +963,13 @@ func finalizeCodexCommentaryBlock(params *ConvertCodexResponseToClaudeParams) []
 }
 
 // codexMessageTextBlock builds a non-stream content block: {"type":"text","text":...}
-// or, for a commentary message, {"type":"thinking","thinking":...}.
+// or, for a commentary message, {"type":"thinking","thinking":...} carrying the
+// internal commentary marker in its signature field.
 func codexMessageTextBlock(blockType, text string) []byte {
 	if blockType == "thinking" {
-		block := []byte(`{"type":"thinking","thinking":""}`)
+		block := []byte(`{"type":"thinking","thinking":"","signature":""}`)
 		block, _ = sjson.SetBytes(block, "thinking", text)
+		block, _ = sjson.SetBytes(block, "signature", codexCommentarySignatureMarker)
 		return block
 	}
 	block := []byte(`{"type":"text","text":""}`)
@@ -1069,12 +1066,18 @@ func finalizeCodexThinkingBlock(params *ConvertCodexResponseToClaudeParams) []by
 	}
 
 	output := make([]byte, 0, 256)
-	if !params.CommentaryMessageOpen && params.ThinkingSignature != "" {
+	signatureToEmit := ""
+	if params.CommentaryMessageOpen {
+		signatureToEmit = codexCommentarySignatureMarker
+	} else if params.ThinkingSignature != "" {
+		signatureToEmit = params.ThinkingSignature
+		params.ThinkingSignature = ""
+	}
+	if signatureToEmit != "" {
 		signatureDelta := []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":""}}`)
 		signatureDelta, _ = sjson.SetBytes(signatureDelta, "index", params.BlockIndex)
-		signatureDelta, _ = sjson.SetBytes(signatureDelta, "delta.signature", params.ThinkingSignature)
+		signatureDelta, _ = sjson.SetBytes(signatureDelta, "delta.signature", signatureToEmit)
 		output = translatorcommon.AppendSSEEventBytes(output, "content_block_delta", signatureDelta, 2)
-		params.ThinkingSignature = ""
 	}
 
 	contentBlockStop := []byte(`{"type":"content_block_stop","index":0}`)

@@ -181,12 +181,14 @@ func TestCodexWebsocketWriteCompressionFrames(t *testing.T) {
 			for _, tc := range []struct {
 				url        string
 				compressed bool
+				disabled   bool
 			}{
-				{"wss://chatgpt.com/backend-api/codex/responses", true},
-				{"wss://chatgpt.com:443/backend-api/codex/v1/responses", true},
-				{"wss://gateway.example/backend-api/codex/responses", false},
-				{"wss://chatgpt.com/v1/responses", false},
-				{"wss://chatgpt.com/backend-api/codex/responses?deflate=off", false},
+				{"wss://chatgpt.com/backend-api/codex/responses", true, false},
+				{"wss://chatgpt.com:443/backend-api/codex/v1/responses", true, false},
+				{"wss://gateway.example/backend-api/codex/responses", false, false},
+				{"wss://chatgpt.com/v1/responses", false, false},
+				{"wss://chatgpt.com/backend-api/codex/responses?deflate=off", false, false},
+				{"wss://chatgpt.com/backend-api/codex/responses", false, true},
 			} {
 				t.Run(fmt.Sprintf("bridge=%v/%s", bridge, tc.url), func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -194,7 +196,12 @@ func TestCodexWebsocketWriteCompressionFrames(t *testing.T) {
 					if bridge {
 						ctx = context.WithValue(ctx, codexHTTPWebsocketContextKey{}, &codexHTTPWebsocketBridge{})
 					}
-					executor := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: os.Getenv("CLI_PROXY_WS_COMPRESSION_PROXY")}})
+					cfg := &config.Config{SDKConfig: sdkconfig.SDKConfig{ProxyURL: os.Getenv("CLI_PROXY_WS_COMPRESSION_PROXY")}}
+					if tc.disabled {
+						enabled := false
+						cfg.Codex.WebsocketCompression = &enabled
+					}
+					executor := NewCodexWebsocketsExecutor(cfg)
 					separator := "?"
 					if strings.Contains(tc.url, "?") {
 						separator = "&"

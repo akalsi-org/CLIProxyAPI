@@ -82,7 +82,7 @@ Encoded-byte limits still belong to server middleware; standalone SDK users must
 Decoded-byte limits do not change the existing zstd decoder window settings.
 Request logging remains unchanged; stored gzip request bodies retain their compressed wire representation.
 
-The proxy compresses finalized upstream JSON only at these verified HTTPS endpoints:
+The default fork policy compresses finalized upstream JSON only at these verified HTTPS endpoints:
 
 | Endpoint | Request encoding |
 | --- | --- |
@@ -100,15 +100,24 @@ Request lengths and replay bodies describe the actual transmitted bytes.
 A compressed request can retry once without compression after an explicit HTTP 415 encoding rejection.
 Other errors, transport failures, and successful responses never trigger this compression fallback.
 Cancellation stops fallback; the helper never retries a consumed response stream.
-There is no capability cache, background probe, or new configuration flag.
+The default fork policy adds no capability cache, background probe, or configuration flag.
 Existing response decompression and SSE streaming remain unchanged.
+
+Upstream also provides explicit `upstream.codex.upstream-request-compression` and `upstream-request-compression-min-bytes` settings.
+These settings default to disabled and 1024 bytes, respectively.
+Explicit enablement selects upstream's broader OAuth compression policy, including compact requests and HTTP 400/415 fallback.
+That opt-in policy is not equivalent to the default fork policy above.
+Disabling that upstream setting leaves the default fork policy active.
+HTTP-to-WebSocket bridge header preparation never enables HTTP request compression.
 
 ### Codex WebSocket compression
 
 Codex WebSocket connections negotiate `permessage-deflate`, as upstream does.
-Upstream disables outbound compression after negotiation because some upstreams reject compressed client frames.
+Upstream now enables outbound compression by default and uses the default flate compression level.
+The fork retains its endpoint restriction because other upstreams can reject compressed client frames.
 The fork enables outbound compression only for `wss://chatgpt.com` Codex responses endpoints.
-Every other WebSocket host keeps upstream's uncompressed outbound frames.
+The `upstream.codex.websocket-compression: false` setting disables outbound compression, including on those endpoints.
+Every other Codex WebSocket host keeps uncompressed outbound frames.
 If the server does not negotiate the extension, outbound frames stay uncompressed.
 This covers native Codex WebSockets and the HTTP-to-WebSocket bridge.
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2231,11 +2232,14 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
+	var inWriteHookOnce sync.Once
 	pongDeliveredDuringWrite := make(chan struct{})
-	requestReceived := make(chan struct{})
+	var pongDeliveredOnce sync.Once
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
+		// A failed write is retried on a new connection, which runs the hook
+		// and the handler again; a second close would panic the package run.
+		inWriteHookOnce.Do(func() { close(inWriteHook) })
 		select {
 		case <-pongDeliveredDuringWrite:
 		case <-time.After(2 * time.Second):
@@ -2257,13 +2261,17 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return nil
 		})
 
+		payloadReceived := make(chan struct{})
 		go func() {
+			signaled := false
 			for {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
 				}
-				close(requestReceived)
-				return
+				if !signaled {
+					signaled = true
+					close(payloadReceived)
+				}
 			}
 		}()
 
@@ -2281,19 +2289,22 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			if got != "xai-session-ping" {
 				t.Errorf("unexpected pong payload: got %q, want xai-session-ping", got)
 			}
-			close(pongDeliveredDuringWrite)
+			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress")
 			return
 		}
 
-		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
+		// The held client write is released together with the pong. Closing the
+		// socket before that payload arrives fails the write with "use of closed
+		// network connection", so answer only once the request is in.
 		select {
-		case <-requestReceived:
+		case <-payloadReceived:
 		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for uploaded request")
+			t.Errorf("client payload never reached the server")
 			return
 		}
+		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
 	defer server.Close()
@@ -2336,11 +2347,14 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	serverPongCh := make(chan string, 1)
 	inWriteHook := make(chan struct{})
+	var inWriteHookOnce sync.Once
 	pongDeliveredDuringWrite := make(chan struct{})
-	requestReceived := make(chan struct{})
+	var pongDeliveredOnce sync.Once
 
 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
-		close(inWriteHook)
+		// A failed write is retried on a new connection, which runs the hook
+		// and the handler again; a second close would panic the package run.
+		inWriteHookOnce.Do(func() { close(inWriteHook) })
 		select {
 		case <-pongDeliveredDuringWrite:
 		case <-time.After(2 * time.Second):
@@ -2362,13 +2376,17 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		payloadReceived := make(chan struct{})
 		go func() {
+			signaled := false
 			for {
 				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
 					return
 				}
-				close(requestReceived)
-				return
+				if !signaled {
+					signaled = true
+					close(payloadReceived)
+				}
 			}
 		}()
 
@@ -2386,19 +2404,22 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			if got != "xai-sessionless-ping" {
 				t.Errorf("unexpected pong payload: got %q, want xai-sessionless-ping", got)
 			}
-			close(pongDeliveredDuringWrite)
+			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
 			return
 		}
 
-		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
+		// The held client write is released together with the pong. Closing the
+		// socket before that payload arrives fails the write with "use of closed
+		// network connection", so answer only once the request is in.
 		select {
-		case <-requestReceived:
+		case <-payloadReceived:
 		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for uploaded request")
+			t.Errorf("client payload never reached the server")
 			return
 		}
+		respPayload := []byte(`{"type":"response.done","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
 	defer server.Close()

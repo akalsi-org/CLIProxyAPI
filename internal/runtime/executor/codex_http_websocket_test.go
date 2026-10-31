@@ -142,6 +142,32 @@ func codexHTTPCollect(t *testing.T, stream *cliproxyexecutor.StreamResult) []byt
 	return out
 }
 
+func TestCodexHTTPWebsocketHeadersIgnoreHTTPCompression(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{HTTPWebsockets: true, UpstreamRequestCompression: true}}
+	executor := NewCodexWebsocketsExecutor(cfg)
+	auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "synthetic-token"}}
+	body := []byte(`{"model":"gpt-5.4","stream":true,"input":"` + strings.Repeat("synthetic compression fixture ", 2000) + `"}`)
+	calls := 0
+	ctx := helps.WithPayloadFinalizer(t.Context(), func(payload []byte) []byte {
+		calls++
+		return payload
+	})
+	req := cliproxyexecutor.Request{Model: "gpt-5.4", Payload: body}
+	got, headers, err := executor.httpBridgeHeaders(ctx, auth, req, cliproxyexecutor.Options{}, sdktranslator.FormatOpenAIResponse, "https://chatgpt.com/backend-api/codex/responses", req.Model, "synthetic-token", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) || calls != 1 {
+		t.Fatalf("bridge payload changed or finalizer ran %d times", calls)
+	}
+	if encoding := headers.Get("Content-Encoding"); encoding != "" {
+		t.Fatalf("WebSocket headers contain HTTP Content-Encoding=%q", encoding)
+	}
+	if headers.Get("Authorization") != "Bearer synthetic-token" {
+		t.Fatal("bridge lost provider authentication")
+	}
+}
+
 func TestCodexHTTPWebsocketFormatsReuseIndependentRequests(t *testing.T) {
 	for _, format := range []sdktranslator.Format{sdktranslator.FormatClaude, sdktranslator.FormatOpenAI, sdktranslator.FormatOpenAIResponse} {
 		for _, streaming := range []bool{false, true} {
