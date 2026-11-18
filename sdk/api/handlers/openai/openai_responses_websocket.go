@@ -123,13 +123,19 @@ func websocketClosePayloadForUpstreamError(err error) (bool, []byte) {
 }
 
 type responsesWebsocketWriter struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
-	closing atomic.Bool
+	conn      *websocket.Conn
+	ctx       context.Context
+	writeMu   sync.Mutex
+	closing   atomic.Bool
+	closeDone chan struct{}
 }
 
-func newResponsesWebsocketWriter(conn *websocket.Conn) *responsesWebsocketWriter {
-	return &responsesWebsocketWriter{conn: conn}
+func newResponsesWebsocketWriter(conn *websocket.Conn, contexts ...context.Context) *responsesWebsocketWriter {
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
+	return &responsesWebsocketWriter{conn: conn, ctx: ctx, closeDone: make(chan struct{})}
 }
 
 // closeForUpstreamError sends a best-effort close frame without waiting behind
@@ -146,10 +152,13 @@ func (w *responsesWebsocketWriter) closeForUpstreamError(err error) (bool, error
 	if !w.closing.CompareAndSwap(false, true) {
 		return true, nil
 	}
+	defer close(w.closeDone)
 	if !w.writeMu.TryLock() {
 		return true, w.conn.Close()
 	}
 	defer w.writeMu.Unlock()
+	stopCancel := context.AfterFunc(w.ctx, func() { _ = w.conn.Close() })
+	defer stopCancel()
 
 	errWrite := w.conn.WriteControl(websocket.CloseMessage, payload, time.Time{})
 	errClose := w.conn.Close()
@@ -166,6 +175,7 @@ func (w *responsesWebsocketWriter) closeWithoutError() (bool, error) {
 	if !w.closing.CompareAndSwap(false, true) {
 		return false, nil
 	}
+	defer close(w.closeDone)
 	return true, w.conn.Close()
 }
 
@@ -280,12 +290,18 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
 		return false, nil
 	}
 	if !w.closing.CompareAndSwap(false, true) {
+		// Another terminal path owns delivery. Do not let handler teardown close
+		// the socket until its error frame has completed or its write has failed.
+		<-w.closeDone
 		return false, nil
 	}
+	defer close(w.closeDone)
 	if !w.writeMu.TryLock() {
 		return false, w.conn.Close()
 	}
 	defer w.writeMu.Unlock()
+	stopCancel := context.AfterFunc(w.ctx, func() { _ = w.conn.Close() })
+	defer stopCancel()
 
 	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
 	errClose := w.conn.Close()
@@ -460,12 +476,12 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	writer := newResponsesWebsocketWriter(conn)
 	passthroughSessionID := uuid.NewString()
 	// After the upgrade, error-only HTTP logs cannot consume deferred bodies.
 	// Apply the policy before routing so plugin callbacks inherit it as well.
 	socketCtx, cancelSocket := context.WithCancelCause(logging.WithDeferredAPIRequestCaptureDisabled(c.Request.Context()))
 	defer cancelSocket(nil)
+	writer := newResponsesWebsocketWriter(conn, socketCtx)
 	c.Request = c.Request.WithContext(socketCtx)
 	upgradeRequest := c.Request.Clone(socketCtx)
 	// Start Ping at upgrade, before opening an upstream stream can block.
