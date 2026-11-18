@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/client/grokbuild"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -22,8 +23,6 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const codexHTTPWebsocketMessageLimit = 50 * 1024 * 1024
@@ -74,55 +73,43 @@ func (e *CodexAutoExecutor) httpWebsocketContext(ctx context.Context, auth *clip
 	return context.WithValue(ctx, codexHTTPWebsocketContextKey{}, bridge), true
 }
 
-// Inspect the immutable body once. Absent sjson deletions otherwise allocate a full discarded body copy.
+// Keep already normalized SDK bodies allocation-free.
 func codexHTTPPayload(ctx context.Context, body []byte) []byte {
 	if codexHTTPBridge(ctx) == nil {
 		return body
 	}
-	fields := [...]string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"}
 	root := util.ParseGJSONBytesNoCopy(body)
-	var dropMask uint8
-	streamSeen, streamTrue := false, false
-	if root.IsObject() {
-		root.ForEach(func(key, value gjson.Result) bool {
-			switch key.String() {
-			case "previous_response_id":
-				dropMask |= 1
-			case "generate":
-				dropMask |= 2
-			case "prompt_cache_retention":
-				dropMask |= 4
-			case "safety_identifier":
-				dropMask |= 8
-			case "stream_options":
-				dropMask |= 16
-			case "stream":
-				if !streamSeen {
-					streamSeen, streamTrue = true, value.Type == gjson.True
-				}
-			}
-			return true
-		})
-	} else {
-		// Retain existing mutation behavior for unusual SDK bodies.
-		dropMask = 31
-	}
-	if !streamTrue {
-		body = helps.SetBoolIfDifferent(body, "stream", true)
-	}
-	for index, key := range fields {
-		if dropMask&(1<<index) != 0 {
-			body, _ = sjson.DeleteBytes(body, key)
+	needsNormalization := !root.IsObject() || root.Get("stream").Type != ojson.True
+	for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+		if root.Get(field).Exists() {
+			needsNormalization = true
+			break
 		}
 	}
-	return body
+	if !needsNormalization {
+		return body
+	}
+	doc := ojson.NewDoc(body)
+	codexHTTPPayloadDoc(ctx, doc)
+	return doc.Bytes()
 }
 
-func (b *codexHTTPWebsocketBridge) normalizeParallelToolCalls(body []byte, headers http.Header) []byte {
-	if b != nil {
-		return normalizeCodexParallelToolCalls(body, headers)
+func codexHTTPPayloadDoc(ctx context.Context, doc *ojson.Doc) {
+	if codexHTTPBridge(ctx) == nil || doc == nil {
+		return
 	}
-	return normalizeCodexWebsocketParallelToolCalls(body, headers)
+	helps.SetBoolIfDifferentDoc(doc, "stream", true)
+	for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+		_ = doc.Delete(field)
+	}
+}
+
+func (b *codexHTTPWebsocketBridge) normalizeParallelToolCallsDoc(doc *ojson.Doc, headers http.Header) {
+	if b != nil {
+		normalizeCodexParallelToolCallsDoc(doc, headers)
+		return
+	}
+	normalizeCodexWebsocketParallelToolCallsDoc(doc, headers)
 }
 
 func codexWebsocketPayloadSelector(ctx context.Context) string {
@@ -132,18 +119,32 @@ func codexWebsocketPayloadSelector(ctx context.Context) string {
 	return "codex-websockets"
 }
 
-// Derive provider headers through the HTTP path before introducing any private pool identity.
+// Retain the SDK helper while production builders carry one document through finalization.
 func (e *CodexWebsocketsExecutor) httpBridgeHeaders(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, from sdktranslator.Format, httpURL, baseModel, token string, body []byte) ([]byte, http.Header, error) {
-	// A nil auth disables HTTP body compression; this request supplies only WebSocket identity headers.
-	httpReq, body, err := e.cacheHelper(ctx, from, httpURL, req, body, nil, opts.Headers)
+	doc := ojson.NewDoc(body)
+	headers, err := e.httpBridgeHeadersDoc(ctx, auth, req, opts, from, token, doc)
 	if err != nil {
 		return nil, nil, err
 	}
-	applyCodexHeaders(httpReq, auth, token, true, e.cfg, opts.Headers)
-	applyCodexRoutingHint(ctx, httpReq.Header, auth, baseModel, body, opts.Headers)
-	applyModelHeaderOverrides(httpReq.Header, baseModel)
-	headers := httpReq.Header
-	// These two headers belong to HTTP framing, not provider identity.
+	helps.FinalizePayloadDoc(ctx, doc)
+	body = doc.Bytes()
+	applyCodexRoutingHint(ctx, headers, auth, baseModel, body, opts.Headers)
+	applyModelHeaderOverrides(headers, baseModel)
+	return body, headers, nil
+}
+
+// Prepare HTTP identity without finalizing payload rules or enabling HTTP body compression.
+func (e *CodexWebsocketsExecutor) httpBridgeHeadersDoc(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, from sdktranslator.Format, token string, doc *ojson.Doc) (http.Header, error) {
+	cacheID, err := prepareCodexHTTPPromptCacheDoc(ctx, from, req, doc, opts.Headers)
+	if err != nil {
+		return nil, err
+	}
+	headers := make(http.Header)
+	headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	if cacheID != "" {
+		headers.Set("Session-Id", cacheID)
+	}
+	applyCodexHeaders((&http.Request{Header: headers}).WithContext(ctx), auth, token, true, e.cfg, opts.Headers)
 	deleteHeaderCaseInsensitive(headers, "Connection")
 	deleteHeaderCaseInsensitive(headers, "Content-Length")
 	beta := headers.Get("OpenAI-Beta")
@@ -153,9 +154,8 @@ func (e *CodexWebsocketsExecutor) httpBridgeHeaders(ctx context.Context, auth *c
 		}
 		headers.Set("OpenAI-Beta", beta+codexResponsesWebsocketBetaHeaderValue)
 	}
-	// Codex websocket v2 spells the existing HTTP session identity with an underscore.
 	ensureCodexWebsocketSessionHeader(headers, opts.Headers, "")
-	return body, headers, nil
+	return headers, nil
 }
 
 func codexHTTPFingerprint(values ...any) string {
@@ -221,11 +221,11 @@ func (b *codexHTTPWebsocketBridge) validatePayload(body []byte) error {
 		return nil
 	}
 	for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
-		if gjson.GetBytes(body, field).Exists() {
+		if ojson.GetBytes(body, field).Exists() {
 			return statusErr{code: http.StatusBadRequest, msg: "codex HTTP websocket: configured payload contains incompatible field " + field}
 		}
 	}
-	if gjson.GetBytes(body, "stream").Type != gjson.True {
+	if ojson.GetBytes(body, "stream").Type != ojson.True {
 		return statusErr{code: http.StatusBadRequest, msg: "codex HTTP websocket: configured payload requires stream=true"}
 	}
 	return nil
@@ -250,7 +250,7 @@ func (b *codexHTTPWebsocketBridge) complete(ctx context.Context, reporter *helps
 	if b == nil {
 		return
 	}
-	switch gjson.GetBytes(payload, "type").String() {
+	switch ojson.GetBytes(payload, "type").String() {
 	case "response.completed", "response.done", "response.incomplete":
 		b.clean = true
 		publishCodexImageToolUsage(ctx, reporter, body, payload)
@@ -406,7 +406,7 @@ func (r *codexHTTPWebsocketResource) readLoop(conn *websocket.Conn) {
 			if err == nil && len(payload) > codexHTTPWebsocketMessageLimit {
 				err = &websocket.CloseError{Code: websocket.CloseMessageTooBig}
 			}
-			if err == nil && (kind != websocket.TextMessage || (len(bytes.TrimSpace(payload)) > 0 && (!gjson.ValidBytes(payload) || gjson.GetBytes(payload, "type").String() == ""))) {
+			if err == nil && (kind != websocket.TextMessage || (len(bytes.TrimSpace(payload)) > 0 && (!ojson.ValidBytes(payload) || ojson.GetBytes(payload, "type").String() == ""))) {
 				err = fmt.Errorf("codex HTTP websocket: malformed response event")
 			}
 		}
@@ -491,10 +491,10 @@ func codexHTTPConnectionNeutralEvent(payload []byte) bool {
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return true
 	}
-	if gjson.GetBytes(payload, "response.id").Exists() || gjson.GetBytes(payload, "response_id").Exists() {
+	if ojson.GetBytes(payload, "response.id").Exists() || ojson.GetBytes(payload, "response_id").Exists() {
 		return false
 	}
-	switch gjson.GetBytes(payload, "type").String() {
+	switch ojson.GetBytes(payload, "type").String() {
 	case "codex.rate_limits", "codex.response.metadata", "keepalive":
 		return true
 	default:
@@ -507,11 +507,11 @@ func (r *codexHTTPWebsocketResource) validateResponse(payload []byte) error {
 	if codexHTTPConnectionNeutralEvent(payload) {
 		return nil
 	}
-	eventType := gjson.GetBytes(payload, "type").String()
+	eventType := ojson.GetBytes(payload, "type").String()
 	terminal := eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete"
-	responseID := gjson.GetBytes(payload, "response.id").String()
+	responseID := ojson.GetBytes(payload, "response.id").String()
 	if eventType == "response.created" || terminal {
-		if !gjson.GetBytes(payload, "response").IsObject() || gjson.GetBytes(payload, "response.id").Type != gjson.String || responseID == "" {
+		if !ojson.GetBytes(payload, "response").IsObject() || ojson.GetBytes(payload, "response.id").Type != ojson.String || responseID == "" {
 			return fmt.Errorf("codex HTTP websocket: malformed response envelope")
 		}
 	}
@@ -519,7 +519,7 @@ func (r *codexHTTPWebsocketResource) validateResponse(payload []byte) error {
 		return fmt.Errorf("codex HTTP websocket: malformed failure envelope")
 	}
 	if responseID == "" {
-		responseID = gjson.GetBytes(payload, "response_id").String()
+		responseID = ojson.GetBytes(payload, "response_id").String()
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -543,32 +543,32 @@ func (r *codexHTTPWebsocketResource) validateResponse(payload []byte) error {
 
 // A synthesized native status must not turn a malformed HTTP bridge event into a replayable rejection.
 func codexHTTPDefinitiveFailure(payload []byte) bool {
-	eventType := gjson.GetBytes(payload, "type").String()
-	var errorNode gjson.Result
+	eventType := ojson.GetBytes(payload, "type").String()
+	var errorNode ojson.Result
 	switch eventType {
 	case "error":
-		errorNode = gjson.GetBytes(payload, "body.error")
+		errorNode = ojson.GetBytes(payload, "body.error")
 		if !errorNode.Exists() {
-			errorNode = gjson.GetBytes(payload, "error")
+			errorNode = ojson.GetBytes(payload, "error")
 		}
 		for _, path := range []string{"status", "status_code"} {
-			status := gjson.GetBytes(payload, path)
-			if status.Exists() && (status.Type != gjson.Number || status.Int() < 400 || status.Int() > 599 || status.Float() != float64(status.Int())) {
+			status := ojson.GetBytes(payload, path)
+			if status.Exists() && (status.Type != ojson.Number || status.Int() < 400 || status.Int() > 599 || status.Float() != float64(status.Int())) {
 				return false
 			}
 		}
 	case "response.failed":
-		response := gjson.GetBytes(payload, "response")
+		response := ojson.GetBytes(payload, "response")
 		id := response.Get("id")
-		if !response.IsObject() || id.Type != gjson.String || strings.TrimSpace(id.String()) == "" {
+		if !response.IsObject() || id.Type != ojson.String || strings.TrimSpace(id.String()) == "" {
 			return false
 		}
-		if status := response.Get("status"); status.Exists() && (status.Type != gjson.String || status.String() != "failed") {
+		if status := response.Get("status"); status.Exists() && (status.Type != ojson.String || status.String() != "failed") {
 			return false
 		}
 		errorNode = response.Get("error")
 		if !errorNode.Exists() {
-			errorNode = gjson.GetBytes(payload, "error")
+			errorNode = ojson.GetBytes(payload, "error")
 		}
 	default:
 		return false
@@ -578,7 +578,7 @@ func codexHTTPDefinitiveFailure(payload []byte) bool {
 	}
 	for _, field := range []string{"message", "type", "code"} {
 		value := errorNode.Get(field)
-		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+		if value.Type == ojson.String && strings.TrimSpace(value.String()) != "" {
 			return true
 		}
 	}

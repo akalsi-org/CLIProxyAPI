@@ -217,7 +217,7 @@ func TestAntigravityThrottleKeepsExplicitQuotaHandling(t *testing.T) {
 			})
 
 			got := antigravityThrottleTestExecute(t, ctx, executor, auth)
-			want := newAntigravityStatusErr(executor.cfg, http.StatusTooManyRequests, []byte(body))
+			want := newAntigravityStatusErrWithConfig(executor.cfg, http.StatusTooManyRequests, []byte(body))
 			if got.IsCredentialScoped() != want.IsCredentialScoped() || (got.RetryAfter() == nil) != (want.RetryAfter() == nil) ||
 				(got.RetryAfter() != nil && *got.RetryAfter() != *want.RetryAfter()) {
 				t.Fatalf("explicit 429 handling changed: got scoped=%v retry=%v, want scoped=%v retry=%v",

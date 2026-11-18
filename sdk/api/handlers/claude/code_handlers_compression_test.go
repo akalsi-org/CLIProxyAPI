@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -20,7 +21,6 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 type compressionCaptureExecutor struct {
@@ -165,7 +165,7 @@ func TestCompressedIngressHandlers(t *testing.T) {
 						if executor.mode != endpoint.mode || executor.source != endpoint.source {
 							t.Fatalf("mode=%s source=%s", executor.mode, executor.source)
 						}
-						if gjson.GetBytes(executor.payload, "messages.0.content").String() != "hello" {
+						if ojson.GetBytesNoCopy(executor.payload, "messages.0.content").String() != "hello" {
 							t.Fatalf("payload=%s", executor.payload)
 						}
 						if endpoint.mode == "count" && recorder.Body.String() != `{"input_tokens":7}` {

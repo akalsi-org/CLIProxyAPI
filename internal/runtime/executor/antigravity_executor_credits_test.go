@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -29,6 +29,7 @@ import (
 // may still be writing these maps when a test's cleanup runs. Replacing the
 // variable is an unsynchronized write and races with them; Clear is not.
 func resetAntigravityCreditsRetryState() {
+	antigravityTOSPauseUntil.Clear()
 	antigravityCreditsFailureByAuth.Clear()
 	antigravityShortCooldownByAuth.Clear()
 	antigravityCreditsBalanceByAuth.Clear()
@@ -238,7 +239,7 @@ func TestClassifyAntigravity429(t *testing.T) {
 		if decision.retryAfter != nil {
 			t.Fatalf("decideAntigravity429().retryAfter = %s, want nil", *decision.retryAfter)
 		}
-		err := newAntigravityStatusErr(nil, http.StatusTooManyRequests, body)
+		err := newAntigravityStatusErrWithConfig(nil, http.StatusTooManyRequests, body)
 		if !err.IsCredentialScoped() {
 			t.Fatal("newAntigravityStatusErr().IsCredentialScoped() = false, want true")
 		}

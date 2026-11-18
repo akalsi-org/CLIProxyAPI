@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
-	"github.com/tidwall/gjson"
 )
 
 func TestCodexWebsocketReadTimeoutDefaultOneHour(t *testing.T) {

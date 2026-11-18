@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const antigravityCoolingBareBody = `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
@@ -56,7 +56,7 @@ func TestNewAntigravityStatusErrCoolingPolicy(t *testing.T) {
 				if policy == "true" {
 					wantWide, wantWait = tc.optInWide, tc.optInWait
 				}
-				err := newAntigravityStatusErr(cfg, http.StatusTooManyRequests, []byte(tc.body))
+				err := newAntigravityStatusErrWithConfig(cfg, http.StatusTooManyRequests, []byte(tc.body))
 				if err.IsCredentialScoped() != wantWide {
 					t.Fatalf("IsCredentialScoped = %v, want %v", err.IsCredentialScoped(), wantWide)
 				}
@@ -71,7 +71,7 @@ func TestNewAntigravityStatusErrCoolingPolicy(t *testing.T) {
 		}
 	}
 	cfg := &config.Config{Antigravity: config.AntigravityConfig{ModelLevelCooling: true}}
-	err := newAntigravityStatusErr(cfg, http.StatusForbidden, []byte(antigravityCoolingBareBody))
+	err := newAntigravityStatusErrWithConfig(cfg, http.StatusForbidden, []byte(antigravityCoolingBareBody))
 	if err.IsCredentialScoped() || err.RetryAfter() != nil || err.StatusCode() != http.StatusForbidden {
 		t.Fatalf("non-429 behavior changed: %#v", err)
 	}
@@ -142,7 +142,7 @@ func TestAntigravityCoolingManagerIsolation(t *testing.T) {
 					}
 					calls.Add(1)
 					body, _ := io.ReadAll(r.Body)
-					if gjson.GetBytes(body, "model").String() == "gemini-3.8-flash-high" && !failed.Swap(true) {
+					if ojson.GetBytesNoCopy(body, "model").String() == "gemini-3.8-flash-high" && !failed.Swap(true) {
 						w.WriteHeader(http.StatusTooManyRequests)
 						_, _ = io.WriteString(w, antigravityCoolingBareBody)
 						return
@@ -308,7 +308,7 @@ func TestAntigravityCoolingConcurrentFailuresDoNotShortenReset(t *testing.T) {
 	auth := antigravityCoolingTestAuth("cooling-concurrent", "http://synthetic.invalid")
 	manager := newAntigravityCoolingTestManager(t, cfg, auth)
 	body := []byte(`{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3600s"}]}}`)
-	err := newAntigravityStatusErr(cfg, http.StatusTooManyRequests, body)
+	err := newAntigravityStatusErrWithConfig(cfg, http.StatusTooManyRequests, body)
 	result := cliproxyauth.Result{AuthID: auth.ID, Provider: auth.Provider, Model: "gemini-3.8-flash-high(high)", Error: &cliproxyauth.Error{HTTPStatus: err.StatusCode(), Message: err.Error()}, RetryAfter: err.RetryAfter(), CredentialScope: err.IsCredentialScoped()}
 	manager.MarkResult(context.Background(), result)
 	snapshot, _ := manager.GetByID(auth.ID)
@@ -316,7 +316,7 @@ func TestAntigravityCoolingConcurrentFailuresDoNotShortenReset(t *testing.T) {
 	if deadline.Sub(snapshot.ModelStates["gemini-3.8-flash-high"].UpdatedAt) != time.Hour {
 		t.Fatal("the initial failure lost the provider's one-hour reset")
 	}
-	shortErr := newAntigravityStatusErr(cfg, http.StatusTooManyRequests, []byte(antigravityCoolingBareBody))
+	shortErr := newAntigravityStatusErrWithConfig(cfg, http.StatusTooManyRequests, []byte(antigravityCoolingBareBody))
 	result.RetryAfter = shortErr.RetryAfter()
 	var wg sync.WaitGroup
 	for range 16 {

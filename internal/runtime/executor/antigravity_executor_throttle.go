@@ -3,17 +3,17 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
 )
 
 // A bare RESOURCE_EXHAUSTED names no limit and gives no retry guidance. Google
@@ -65,7 +65,7 @@ func isAntigravityBareResourceExhausted(statusCode int, body []byte) bool {
 // the account quota summary shows the model's group exhausted, and otherwise
 // for a short exponential backoff.
 func (e *AntigravityExecutor) antigravityStatusErr(ctx context.Context, auth *cliproxyauth.Auth, token, model string, statusCode int, body []byte) statusErr {
-	err := newAntigravityStatusErr(e.cfg, statusCode, body)
+	err := newAntigravityStatusErrWithConfig(e.cfg, statusCode, body)
 	if !isAntigravityBareResourceExhausted(statusCode, body) || antigravityCoolingDisabled(auth, e.cfg) {
 		return err
 	}
@@ -151,7 +151,7 @@ func antigravityQuotaGroupExhaustedUntil(body []byte, model string, now time.Tim
 		family = "GPT"
 	}
 	var until time.Time
-	for _, group := range gjson.GetBytes(body, "groups").Array() {
+	for _, group := range ojson.GetBytesNoCopy(body, "groups").Array() {
 		if !strings.Contains(group.Get("displayName").String()+" "+group.Get("description").String(), family) {
 			continue
 		}

@@ -3,7 +3,6 @@ package executor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -23,8 +24,6 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type codexHTTPTestUpstream struct {
@@ -165,6 +164,75 @@ func TestCodexHTTPWebsocketHeadersIgnoreHTTPCompression(t *testing.T) {
 	}
 	if headers.Get("Authorization") != "Bearer synthetic-token" {
 		t.Fatal("bridge lost provider authentication")
+	}
+}
+
+func TestCodexHTTPWebsocketHeaderPreparationDefersPayloadFinalization(t *testing.T) {
+	executor := NewCodexWebsocketsExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Provider: "codex", Metadata: map[string]any{"access_token": "synthetic-token"}}
+	body := []byte(`{"model":"gpt-5.4","input":"hello","prompt_cache_key":"caller-cache"}`)
+	doc := gjson.NewDoc(body)
+	req := cliproxyexecutor.Request{Model: "gpt-5.4", Payload: body}
+	calls := 0
+	ctx := helps.WithPayloadFinalizer(t.Context(), func(payload []byte) []byte {
+		calls++
+		final := gjson.NewDoc(payload)
+		_ = final.Set("prompt_cache_key", "operator-cache")
+		return final.Bytes()
+	})
+	if _, err := executor.httpBridgeHeadersDoc(ctx, auth, req, cliproxyexecutor.Options{}, sdktranslator.FormatOpenAIResponse, "synthetic-token", doc); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("header preparation ran final payload rules %d times", calls)
+	}
+	helps.FinalizePayloadDoc(ctx, doc)
+	if calls != 1 || doc.Get("prompt_cache_key").String() != "operator-cache" {
+		t.Fatalf("final payload barrier changed: calls=%d payload=%s", calls, doc.Bytes())
+	}
+}
+
+func TestCodexHTTPWebsocketFinalPayloadRulesOverrideBuiltins(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
+			upstream := newCodexHTTPTestUpstream(t, nil, 0)
+			exec := codexHTTPTestExecutor(t)
+			exec.httpExec.cfg.Payload.Override = []config.PayloadRule{{
+				Models: []config.PayloadModelRule{{Name: "gpt-*", Protocol: "codex"}},
+				Params: map[string]any{
+					"model":               "gpt-6.1-sol",
+					"instructions":        "operator instructions",
+					"parallel_tool_calls": false,
+					"prompt_cache_key":    "operator-cache",
+				},
+			}}
+			auth := codexHTTPTestAuth(t, upstream)
+			req, opts := codexHTTPTestRequest(sdktranslator.FormatOpenAIResponse)
+			req.Payload = []byte(`{"model":"gpt-5.4","input":"hello","prompt_cache_key":"caller-cache"}`)
+			if streaming {
+				result, err := exec.ExecuteStream(codexHTTPTestContext(), auth, req, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				codexHTTPCollect(t, result)
+			} else if _, err := exec.Execute(codexHTTPTestContext(), auth, req, opts); err != nil {
+				t.Fatal(err)
+			}
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			if len(upstream.bodies) != 1 {
+				t.Fatalf("upstream requests = %d, want 1", len(upstream.bodies))
+			}
+			body := upstream.bodies[0]
+			for field, want := range map[string]string{"model": "gpt-6.1-sol", "instructions": "operator instructions", "prompt_cache_key": "operator-cache"} {
+				if got := gjson.GetBytes(body, field).String(); got != want {
+					t.Fatalf("configured %s = %q, want %q: %s", field, got, want, body)
+				}
+			}
+			if got := gjson.GetBytes(body, "parallel_tool_calls"); got.Type != gjson.False {
+				t.Fatalf("built-in normalization overwrote configured parallel_tool_calls: %s", body)
+			}
+		})
 	}
 }
 
@@ -747,7 +815,9 @@ func TestCodexHTTPWebsocketMainAndImageUsageParity(t *testing.T) {
 		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
 			upstream := newCodexHTTPTestUpstream(t, func(conn *websocket.Conn, _ []byte, id string) {
 				events := codexHTTPTestEvents(id)
-				events[len(events)-1], _ = sjson.SetRawBytes(events[len(events)-1], "response.tool_usage", []byte(`{"image_gen":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`))
+				doc := gjson.NewDoc(events[len(events)-1])
+				_ = doc.SetRaw("response.tool_usage", `{"image_gen":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`)
+				events[len(events)-1] = doc.Bytes()
 				for _, event := range events {
 					if conn.WriteMessage(websocket.TextMessage, event) != nil {
 						return
@@ -1107,10 +1177,12 @@ func TestCodexHTTPWebsocketNormalizationMatchesExistingMutations(t *testing.T) {
 		t.Run(payload, func(t *testing.T) {
 			body := []byte(payload)
 			original := bytes.Clone(body)
-			want := helps.SetBoolIfDifferent(body, "stream", true)
+			wantDoc := gjson.NewDoc(body)
+			_ = wantDoc.Set("stream", true)
 			for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
-				want, _ = sjson.DeleteBytes(want, field)
+				_ = wantDoc.Delete(field)
 			}
+			want := wantDoc.Bytes()
 			got := codexHTTPPayload(ctx, body)
 			if !bytes.Equal(got, want) {
 				t.Fatalf("normalization changed: got=%s want=%s", got, want)

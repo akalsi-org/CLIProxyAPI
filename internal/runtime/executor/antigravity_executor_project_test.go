@@ -13,12 +13,12 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const antigravityProjectTestPayload = `{"project":"payload-project","request":{"project":"nested-project","contents":[{"role":"user","parts":[{"text":"synthetic diagnostic"}]}]}}`
@@ -68,10 +68,10 @@ func TestAntigravityProjectOverrideSelection(t *testing.T) {
 					if active {
 						want = "default-cli-project"
 					}
-					if got := gjson.GetBytes(body, "project").String(); got != want {
+					if got := ojson.GetBytesNoCopy(body, "project").String(); got != want {
 						t.Fatalf("envelope project = %q, want %q", got, want)
 					}
-					if got := gjson.GetBytes(body, "request.project").String(); got != "nested-project" {
+					if got := ojson.GetBytesNoCopy(body, "request.project").String(); got != "nested-project" {
 						t.Fatalf("nested request.project changed: %q", got)
 					}
 					if req.Header.Get("X-Goog-User-Project") != "quota-project-from-caller" || req.Header.Get("Authorization") != "Bearer synthetic-token" {
@@ -137,10 +137,10 @@ func TestAntigravityProjectOverrideGenerationPaths(t *testing.T) {
 								if strings.TrimSpace(override) != "" {
 									want = "default-cli-project"
 								}
-								if got := gjson.GetBytes(body, "project").String(); got != want {
+								if got := ojson.GetBytesNoCopy(body, "project").String(); got != want {
 									t.Errorf("generation project = %q, want %q", got, want)
 								}
-								if gjson.GetBytes(body, "enabledCreditTypes").Exists() != credits {
+								if ojson.GetBytesNoCopy(body, "enabledCreditTypes").Exists() != credits {
 									t.Error("generation project override changed credits injection")
 								}
 								if got := req.Header.Get("X-Goog-User-Project"); got != "" {
@@ -221,7 +221,7 @@ func TestAntigravityProjectOverrideDoesNotFallBackAfterError(t *testing.T) {
 						if err != nil {
 							return nil, err
 						}
-						if gjson.GetBytes(body, "project").String() != "default-cli-project" {
+						if ojson.GetBytesNoCopy(body, "project").String() != "default-cli-project" {
 							t.Error("executor used an alternate project after rejection")
 						}
 						response := issue6199AntigravityJSONResponse(req, `{"error":{"message":"synthetic project rejection"}}`)
@@ -322,7 +322,7 @@ func TestAntigravityProjectOverrideHomeGeneration(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				if gjson.GetBytes(body, "project").String() != "default-cli-project" {
+				if ojson.GetBytesNoCopy(body, "project").String() != "default-cli-project" {
 					t.Error("Home generation did not use its delivered project override")
 				}
 				response := antigravityProjectTestResponse
