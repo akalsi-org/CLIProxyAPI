@@ -97,7 +97,7 @@ func (e *AntigravityExecutor) antigravityQuotaExhaustedUntil(ctx context.Context
 	}
 	body, errFetch := e.fetchAntigravityQuotaSummary(ctx, auth, token)
 	if errFetch != nil {
-		log.Debugf("antigravity executor: quota summary unavailable: %v", errFetch)
+		log.Warnf("antigravity executor: quota summary unavailable: %v", errFetch)
 		return time.Time{}, false
 	}
 	antigravityQuotaSummaryByAuth.Store(auth.ID, antigravityQuotaSummaryEntry{fetchedAt: now, body: body})

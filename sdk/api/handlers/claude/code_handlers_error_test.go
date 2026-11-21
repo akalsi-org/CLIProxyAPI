@@ -907,3 +907,43 @@ func TestClaudeStreamMultiLineDataEventsAreRecognizedAcrossChunks(t *testing.T) 
 		}
 	})
 }
+
+func TestClaudeMessagesHandlerClientCancelBeforeFirstTokenSets499(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	chunks := make(chan coreexecutor.StreamChunk)
+	executor := &preFTKeepAliveClaudeExecutor{chunks: chunks}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	model := "cancel-before-ft-claude-model"
+	auth := &coreauth.Auth{ID: "cancel-before-ft-claude-auth", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
+	t.Cleanup(func() {
+		close(chunks)
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewClaudeCodeAPIHandler(base)
+	router := gin.New()
+	router.POST("/v1/messages", h.ClaudeMessages)
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader("{\"model\":\""+model+"\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}")).WithContext(reqCtx)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		cancel()
+	}()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != 499 {
+		t.Fatalf("status = %d, want 499 on client cancel before first token", recorder.Code)
+	}
+}

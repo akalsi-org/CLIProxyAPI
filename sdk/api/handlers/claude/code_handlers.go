@@ -282,6 +282,9 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 		select {
 		case <-c.Request.Context().Done():
 			cliCancel(c.Request.Context().Err())
+			if !committed && !c.Writer.Written() {
+				c.Status(clienterror.StatusClientClosedRequest)
+			}
 			return
 		case errMsg, ok := <-errChan:
 			if !ok {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"golang.org/x/net/context"
@@ -194,6 +195,9 @@ func (h *BaseAPIHandler) ExecuteStreamWithPreFTKeepAlive(
 				cliCancel(c.Request.Context().Err())
 			}
 			<-bootstrapResult
+			if !c.Writer.Written() {
+				c.Status(clienterror.StatusClientClosedRequest)
+			}
 			return nil, nil, nil, false
 		case result := <-bootstrapResult:
 			return result.data, result.headers, result.errs, true
