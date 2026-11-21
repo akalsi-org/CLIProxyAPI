@@ -1349,3 +1349,39 @@ func TestCodexHTTPWebsocketPongDuringBufferedFragmentedUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The pool key and the dial must use the final model headers, so a model
+// with override headers never reuses a socket dialed for another model.
+func TestCodexHTTPWebsocketModelHeadersPartitionPool(t *testing.T) {
+	const lunaUA = "codex-tui/0.154.0 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.154.0)"
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", streaming), func(t *testing.T) {
+			upstream := newCodexHTTPTestUpstream(t, nil, 0)
+			exec := codexHTTPTestExecutor(t)
+			auth := codexHTTPTestAuth(t, upstream)
+			for _, model := range []string{"gpt-5.4", "gpt-5.6-luna"} {
+				req, opts := codexHTTPTestRequest(sdktranslator.FormatOpenAIResponse)
+				req.Model = model
+				req.Payload = []byte(fmt.Sprintf(`{"model":%q,"input":"hello"}`, model))
+				opts.Stream = streaming
+				if streaming {
+					result, err := exec.ExecuteStream(codexHTTPTestContext(), auth, req, opts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					codexHTTPCollect(t, result)
+				} else if _, err := exec.Execute(codexHTTPTestContext(), auth, req, opts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := upstream.upgrades.Load(); got != 2 {
+				t.Fatalf("upgrades=%d, want one socket per model header set", got)
+			}
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			if got := upstream.headers[1].Get("User-Agent"); got != lunaUA {
+				t.Fatalf("second dial User-Agent = %q, want model override %q", got, lunaUA)
+			}
+		})
+	}
+}

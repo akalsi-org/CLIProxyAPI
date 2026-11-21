@@ -155,11 +155,29 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		return bridge.validatePayload(body)
 	}
+	var upstreamModel string
+	prepareHeaders := func() error {
+		upstreamModel = strings.TrimSpace(doc.Get("model").String())
+		if upstreamModel != "" && upstreamModel != baseModel {
+			reporter.SetUpstreamModel(upstreamModel)
+		}
+		reporter.SetTranslatedReasoningEffort(body, to.String())
+		if bridge == nil {
+			wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
+		}
+		applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, body, opts.Headers)
+		applyModelHeaderOverrides(wsHeaders, upstreamModel)
+		return helps.ValidateCodexHostedImageGenerationDoc(doc, wsHeaders, e.cfg, !useSIWC && !codexAuthUsesAPIKey(auth))
+	}
 	if bridge != nil {
-		// Pooled bridge sessions carry no per-client instruction chain, and an
-		// incompatible final payload must fail before pool acquisition.
+		// Pooled bridge sessions carry no per-client instruction chain. An
+		// incompatible final payload must fail before pool acquisition, and the
+		// pool key and dial use the final routing and model headers.
 		if errFinalize := finalizePayload(nil); errFinalize != nil {
 			return resp, errFinalize
+		}
+		if errHeaders := prepareHeaders(); errHeaders != nil {
+			return resp, errHeaders
 		}
 	}
 	executionSessionID := executionSessionIDFromOptions(opts)
@@ -196,19 +214,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		if errFinalize := finalizePayload(sess); errFinalize != nil {
 			return resp, errFinalize
 		}
-	}
-	upstreamModel := strings.TrimSpace(doc.Get("model").String())
-	if upstreamModel != "" && upstreamModel != baseModel {
-		reporter.SetUpstreamModel(upstreamModel)
-	}
-	reporter.SetTranslatedReasoningEffort(body, to.String())
-	if bridge == nil {
-		wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, nativeRequest, opts.Headers)
-	}
-	applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, body, opts.Headers)
-	applyModelHeaderOverrides(wsHeaders, upstreamModel)
-	if errValidate := helps.ValidateCodexHostedImageGenerationDoc(doc, wsHeaders, e.cfg, !useSIWC && !codexAuthUsesAPIKey(auth)); errValidate != nil {
-		return resp, errValidate
+		if errHeaders := prepareHeaders(); errHeaders != nil {
+			return resp, errHeaders
+		}
 	}
 
 	var authID, authLabel, authType, authValue string
