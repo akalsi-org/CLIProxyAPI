@@ -13,6 +13,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
+	log "github.com/sirupsen/logrus"
 )
 
 // MaxRequestBodyBytesContextKey stores the configured request body size limit (in bytes) on the Gin context.
@@ -49,6 +50,9 @@ func ReadRequestBody(c *gin.Context) ([]byte, error) {
 		}
 		return nil, err
 	}
+	// The body is now plaintext: drop Content-Encoding so nothing downstream
+	// (executors, plugins, header passthrough) decodes or forwards it again.
+	c.Request.Header.Del("Content-Encoding")
 	return decoded, nil
 }
 
@@ -60,14 +64,14 @@ func decodeRequestBody(raw []byte, encoding string, maxBytes int64) ([]byte, err
 		switch enc {
 		case "", "identity":
 			continue
-		case "gzip", "zstd":
-			var decoded []byte
-			var err error
-			if enc == "gzip" {
-				decoded, err = decodeGzipRequestBody(body, maxBytes)
-			} else {
-				decoded, err = decodeZstdRequestBody(body, maxBytes)
+		case "zstd":
+			decoded, err := decodeZstdRequestBody(body, maxBytes)
+			if err != nil {
+				return nil, err
 			}
+			body = decoded
+		case "gzip", "x-gzip":
+			decoded, err := decodeGzipRequestBody(body, maxBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -94,7 +98,11 @@ func decodeGzipRequestBody(raw []byte, maxBytes int64) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create gzip request decoder: %w", err)
 	}
-	defer func() { _ = decoder.Close() }()
+	defer func() {
+		if errClose := decoder.Close(); errClose != nil {
+			log.Warnf("failed to close gzip request decoder: %v", errClose)
+		}
+	}()
 
 	return readDecodedRequestBody(decoder, "gzip", maxBytes)
 }
